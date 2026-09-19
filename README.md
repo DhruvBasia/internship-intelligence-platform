@@ -11,20 +11,20 @@ An intelligent, full-stack internship aggregator, AI evaluation engine, and appl
 ---
 
 <div align="center">
-  <h3>🎬 Product Launch Showcase (1080p Full HD • 30s)</h3>
+  <h3>Product Launch Showcase (1080p Full HD • 30s)</h3>
   <a href="https://github.com/DhruvBasia/internship-intelligence-platform/releases/download/v1.0.0/interniq-launch-30s.mp4">
     <img src="media/interniq-poster-play.jpg" alt="InternIQ 30-Second Launch Video" width="880" style="border-radius: 14px; box-shadow: 0 16px 40px rgba(0,0,0,0.12);" />
   </a>
   <p>
-    🍿 <b><a href="https://github.com/DhruvBasia/internship-intelligence-platform/releases/download/v1.0.0/interniq-launch-30s.mp4">▶ Click Here to Watch Full 1080p HD Launch Video (with Audio)</a></b> &nbsp;&bull;&nbsp; 📦 <b><a href="https://github.com/DhruvBasia/internship-intelligence-platform/releases/tag/v1.0.0">Release v1.0.0</a></b>
+    <b><a href="https://github.com/DhruvBasia/internship-intelligence-platform/releases/download/v1.0.0/interniq-launch-30s.mp4">Watch Full 1080p HD Launch Video (with Audio)</a></b> &nbsp;&bull;&nbsp; <b><a href="https://github.com/DhruvBasia/internship-intelligence-platform/releases/tag/v1.0.0">Release v1.0.0</a></b>
   </p>
 </div>
 
 <br />
 
-### ⚡ Feature Highlights
+### Feature Highlights
 
-| 🔍 **Live Discovery & Ingestion** | 🎯 **Gemini Fit Scoring** | 📋 **Interactive Kanban Pipeline** |
+| **Live Discovery & Ingestion** | **Gemini Fit Scoring** | **Interactive Kanban Pipeline** |
 | :---: | :---: | :---: |
 | <img src="media/hero-search.jpg" width="280" alt="Job Discovery" style="border-radius: 8px;" /> | <img src="media/hero-match.jpg" width="280" alt="Gemini Fit Match" style="border-radius: 8px;" /> | <img src="media/hero-kanban.jpg" width="280" alt="Kanban Pipeline" style="border-radius: 8px;" /> |
 | *Automated multi-feed scraping & deduplication* | *AI resume match analysis & interview tips* | *Visual stage management & status tracking* |
