@@ -11,12 +11,13 @@ An intelligent, full-stack internship aggregator, AI evaluation engine, and appl
 ---
 
 <div align="center">
-  <h3>🎬 Product Launch Showcase (30s)</h3>
-  <a href="media/interniq-launch-30s.mp4">
-    <img src="media/interniq-poster.jpg" alt="InternIQ 30-Second Launch Video" width="880" style="border-radius: 14px; box-shadow: 0 16px 40px rgba(0,0,0,0.12);" />
+  <h3>🎬 Product Launch Showcase</h3>
+  <a href="https://github.com/DhruvBasia/internship-intelligence-platform/releases/download/v1.0.0/interniq-launch-30s-optimized.mp4">
+    <img src="media/interniq-launch.gif" alt="InternIQ 30-Second Launch Video" width="880" style="border-radius: 14px; box-shadow: 0 16px 40px rgba(0,0,0,0.12);" />
   </a>
   <p>
-    🍿 <b><a href="media/interniq-launch-30s.mp4">▶ Click Here to Watch the 30-Second Launch Tour (1080p Full HD MP4)</a></b>
+    🍿 <i>Auto-playing launch demonstration above.</i><br />
+    🎬 <b><a href="https://github.com/DhruvBasia/internship-intelligence-platform/releases/download/v1.0.0/interniq-launch-30s-optimized.mp4">▶ Play / Download Full 1080p HD Video with Audio (MP4)</a></b> &nbsp;|&nbsp; 📦 <b><a href="https://github.com/DhruvBasia/internship-intelligence-platform/releases/tag/v1.0.0">Release v1.0.0</a></b>
   </p>
 </div>
 
