@@ -1,0 +1,1002 @@
+<script>
+/**
+ * JavaScript.html
+ * SPA Frontend Controller, State Manager, and Google Apps Script RPC Bridge.
+ */
+
+// Global State
+const state = {
+  profile: {},
+  jobs: [],
+  logs: [],
+  activeTab: 'dashboard',
+  spreadsheetUrl: '',
+  spreadsheetId: '',
+  selectedJobId: null,
+  sortTableField: 'DateAdded',
+  sortTableAsc: false
+};
+
+// Chart.js Instances
+let statusChart = null;
+let scoreChart = null;
+
+// Initialize on Document Load
+document.addEventListener("DOMContentLoaded", () => {
+  setTheme(localStorage.getItem("theme") || "dark");
+  loadPlatformData();
+  setupEventListeners();
+});
+
+// Theme Setup
+function setTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  localStorage.setItem("theme", theme);
+  const icon = document.querySelector(".theme-toggle i");
+  const text = document.querySelector(".theme-toggle span");
+  if (theme === 'light') {
+    if (icon) icon.className = 'fas fa-moon';
+    if (text) text.innerText = 'Dark Mode';
+  } else {
+    if (icon) icon.className = 'fas fa-sun';
+    if (text) text.innerText = 'Light Mode';
+  }
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme");
+  setTheme(current === 'light' ? 'dark' : 'light');
+}
+
+// Promisified Apps Script Runner
+function callBackend(methodName, ...args) {
+  showLoader(true);
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler((result) => {
+        showLoader(false);
+        resolve(result);
+      })
+      .withFailureHandler((error) => {
+        showLoader(false);
+        showToast(error.message || "An error occurred on the server.", "error");
+        reject(error);
+      })[methodName](...args);
+  });
+}
+
+// Initial Data Fetch
+async function loadPlatformData() {
+  const warningBar = document.getElementById("db-warning-bar");
+  const warningMsg = document.getElementById("db-warning-msg");
+  if (warningBar) warningBar.style.display = "none";
+  
+  try {
+    const res = await callBackend('initPlatform');
+    if (res.success) {
+      state.profile = res.profile;
+      state.jobs = res.jobs;
+      state.logs = res.logs;
+      state.spreadsheetUrl = res.spreadsheetUrl;
+      state.spreadsheetId = res.spreadsheetId;
+      
+      renderApp();
+      showToast("Platform loaded successfully.", "info");
+    } else {
+      if (warningBar && warningMsg) {
+        warningMsg.innerText = "Initialization failed: " + res.error;
+        warningBar.style.display = "block";
+      }
+      showToast("Initialization failed: " + res.error, "error");
+    }
+  } catch (err) {
+    if (warningBar && warningMsg) {
+      warningMsg.innerText = "Connection failed: " + err.message;
+      warningBar.style.display = "block";
+    }
+    console.error("Initialization failed: ", err);
+  }
+}
+
+function openDatabaseSheet() {
+  if (state.spreadsheetUrl) {
+    window.open(state.spreadsheetUrl, '_blank');
+  } else {
+    showToast("Database Spreadsheet URL not loaded yet. Try again.", "warning");
+  }
+}
+
+// Global UI Loader
+function showLoader(show) {
+  const loader = document.getElementById("global-loader");
+  if (loader) {
+    loader.style.display = show ? "block" : "none";
+  }
+}
+
+// Show Toast Alert
+function showToast(message, type = "info") {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+  
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+  
+  let iconClass = "fa-info-circle";
+  if (type === "success") iconClass = "fa-check-circle";
+  if (type === "error") iconClass = "fa-exclamation-circle";
+  
+  toast.innerHTML = `
+    <i class="fas ${iconClass}"></i>
+    <span>${message}</span>
+  `;
+  
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
+
+// Navigation / Router
+function switchTab(tabId) {
+  state.activeTab = tabId;
+  
+  // Update menu highlights
+  document.querySelectorAll(".menu-item").forEach(item => {
+    item.classList.toggle("active", item.getAttribute("data-tab") === tabId);
+  });
+  
+  // Update views
+  document.querySelectorAll(".view-pane").forEach(pane => {
+    pane.classList.toggle("active", pane.id === `${tabId}-tab`);
+  });
+  
+  renderApp();
+}
+
+// Main Render Hub
+function renderApp() {
+  switch (state.activeTab) {
+    case 'dashboard':
+      renderDashboard();
+      break;
+    case 'discovery':
+      renderDiscovery();
+      break;
+    case 'kanban':
+      renderKanban();
+      break;
+    case 'table':
+      renderTable();
+      break;
+    case 'sop':
+      renderSOP();
+      break;
+    case 'settings':
+      renderSettings();
+      break;
+  }
+}
+
+// RENDER: DASHBOARD VIEW
+function renderDashboard() {
+  const jobs = state.jobs;
+  
+  // Calculate Metrics
+  const total = jobs.length;
+  const discovered = jobs.filter(j => j.Status === 'Discovered').length;
+  const applied = jobs.filter(j => j.Status === 'Applied').length;
+  const interviewing = jobs.filter(j => j.Status === 'Interviewing').length;
+  const offered = jobs.filter(j => j.Status === 'Offered').length;
+  
+  document.getElementById("stat-total").innerText = total;
+  document.getElementById("stat-discovered").innerText = discovered;
+  document.getElementById("stat-applied").innerText = applied;
+  document.getElementById("stat-interviews").innerText = interviewing;
+  document.getElementById("stat-offers").innerText = offered;
+  
+  // Render Activity Logs
+  const logStream = document.getElementById("log-stream");
+  if (logStream) {
+    if (state.logs.length === 0) {
+      logStream.innerHTML = `<li class="activity-item" style="color: var(--text-muted);">No recent logs.</li>`;
+    } else {
+      logStream.innerHTML = state.logs.map(log => `
+        <li class="activity-item">
+          <strong>${log.ActivityType}</strong>: ${log.Details}
+          <div class="activity-meta">
+            <span>ID: ${log.InternshipID || 'System'}</span>
+            <span>${new Date(log.Timestamp).toLocaleString()}</span>
+          </div>
+        </li>
+      `).join('');
+    }
+  }
+  
+  // Render Upcoming Deadlines widget
+  const deadlineList = document.getElementById("dashboard-deadlines");
+  if (deadlineList) {
+    const withDeadlines = jobs.filter(j => j.Deadline && j.Status !== 'Rejected' && j.Status !== 'Archived')
+      .slice(0, 5);
+      
+    if (withDeadlines.length === 0) {
+      deadlineList.innerHTML = `<div style="color: var(--text-muted); font-size:13px; padding: 10px 0;">No upcoming deadlines tracked.</div>`;
+    } else {
+      deadlineList.innerHTML = withDeadlines.map(j => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--panel-border);">
+          <div>
+            <div style="font-weight:600; font-size:14px;">${j.Company}</div>
+            <div style="color: var(--text-secondary); font-size:12px;">${j.Role}</div>
+          </div>
+          <div style="text-align:right;">
+            <span class="status-indicator ${j.Status}" style="padding:2px 8px; font-size:10px;">${j.Status}</span>
+            <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">${j.Deadline}</div>
+          </div>
+        </div>
+      `).join('');
+    }
+  }
+
+  // Render Charts
+  setTimeout(() => {
+    buildDashboardCharts(discovered, applied, interviewing, offered, jobs.filter(j => j.Status === 'Rejected').length);
+  }, 100);
+}
+
+// Build Chart.js Visualizations
+function buildDashboardCharts(disc, app, intr, off, rej) {
+  // 1. Pipeline Pie Chart
+  const pieCtx = document.getElementById("statusChartCanvas");
+  if (pieCtx) {
+    if (statusChart) statusChart.destroy();
+    
+    statusChart = new Chart(pieCtx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Discovered', 'Applied', 'Interviewing', 'Offered', 'Rejected'],
+        datasets: [{
+          data: [disc, app, intr, off, rej],
+          backgroundColor: ['#9b59b6', '#3498db', '#e67e22', '#2ecc71', '#e74c3c'],
+          borderColor: 'transparent'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: 'right',
+            labels: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() }
+          }
+        }
+      }
+    });
+  }
+
+  // 2. Score Match Distribution Chart (Bar Chart)
+  const scoreCtx = document.getElementById("scoreChartCanvas");
+  if (scoreCtx) {
+    if (scoreChart) scoreChart.destroy();
+    
+    // Distribute into bins: 0-50, 50-70, 70-85, 85-100
+    const scores = state.jobs.map(j => parseInt(j.AIMatchScore, 10) || 0);
+    const bins = [0, 0, 0, 0];
+    scores.forEach(s => {
+      if (s < 50) bins[0]++;
+      else if (s < 70) bins[1]++;
+      else if (s < 85) bins[2]++;
+      else bins[3]++;
+    });
+
+    scoreChart = new Chart(scoreCtx, {
+      type: 'bar',
+      data: {
+        labels: ['Unmatched (<50)', 'Average (50-70)', 'Good Match (70-85)', 'Ideal (>85)'],
+        datasets: [{
+          label: 'Internships count',
+          data: bins,
+          backgroundColor: ['#e74c3c', '#f1c40f', '#3498db', '#2ecc71'],
+          borderRadius: 6
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim() } },
+          y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim(), stepSize: 1 } }
+        }
+      }
+    });
+  }
+}
+
+// RENDER: DISCOVERY HUB
+function renderDiscovery() {
+  const container = document.getElementById("discovery-list");
+  if (!container) return;
+  
+  const scoreFilter = document.getElementById("filter-score").value;
+  const searchQuery = document.getElementById("discovery-search").value.toLowerCase();
+  
+  // Discovery view only shows newly discovered / untracked listings, or filterable list
+  let filtered = state.jobs.filter(j => j.Status === 'Discovered');
+  
+  if (scoreFilter) {
+    const minScore = parseInt(scoreFilter, 10);
+    filtered = filtered.filter(j => (parseInt(j.AIMatchScore, 10) || 0) >= minScore);
+  }
+  
+  if (searchQuery) {
+    filtered = filtered.filter(j => 
+      j.Company.toLowerCase().includes(searchQuery) || 
+      j.Role.toLowerCase().includes(searchQuery) ||
+      j.Location.toLowerCase().includes(searchQuery)
+    );
+  }
+
+  // Sort by match score descending
+  filtered.sort((a,b) => (parseInt(b.AIMatchScore, 10) || 0) - (parseInt(a.AIMatchScore, 10) || 0));
+
+  if (filtered.length === 0) {
+    container.innerHTML = `
+      <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-secondary);">
+        <i class="fas fa-search-minus" style="font-size: 36px; margin-bottom: 12px; color: var(--text-muted);"></i>
+        <p>No matching discovered internships found. Trigger a scrape in settings or add one manually!</p>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = filtered.map(job => {
+    const score = parseInt(job.AIMatchScore, 10) || 0;
+    let scoreClass = 'low';
+    if (score >= 80) scoreClass = 'high';
+    else if (score >= 60) scoreClass = 'medium';
+    
+    return `
+      <div class="glass-card" style="display:flex; flex-direction:column; justify-content:space-between; height: 100%;">
+        <div>
+          <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:12px;">
+            <span class="match-score-badge ${scoreClass}">Fit: ${score}%</span>
+            <span style="font-size:11px; color:var(--text-muted);">${job.Source}</span>
+          </div>
+          <h3 style="font-family:var(--font-title); font-size:16px; font-weight:700; margin-bottom:4px;">${job.Role}</h3>
+          <p style="font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:8px;">${job.Company} - <span style="font-weight:400; font-style:italic;">${job.Location}</span></p>
+          <p style="font-size:12px; color:var(--text-muted); line-height:1.4; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; margin-bottom:12px;">
+            ${job.Description || 'No description provided.'}
+          </p>
+        </div>
+        
+        <div style="display:flex; gap:8px; margin-top:12px; border-top: 1px solid var(--panel-border); padding-top:12px;">
+          <button class="glass-btn primary" style="flex:1; padding: 6px 12px; font-size:12px;" onclick="trackJob('${job.ID}')">
+            <i class="fas fa-plus"></i> Track
+          </button>
+          <button class="glass-btn" style="padding: 6px 12px; font-size:12px;" onclick="showJobDetailModal('${job.ID}')">
+            Details
+          </button>
+          <button class="glass-btn" style="padding: 6px 10px; font-size:12px; color: var(--danger);" onclick="deleteJobDirect('${job.ID}')" title="Ignore/Delete">
+            <i class="fas fa-trash-alt"></i>
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// RENDER: KANBAN BOARD
+function renderKanban() {
+  const lanes = {
+    'Discovered': document.getElementById("lane-discovered-cards"),
+    'Applied': document.getElementById("lane-applied-cards"),
+    'Interviewing': document.getElementById("lane-interviewing-cards"),
+    'Offered': document.getElementById("lane-offered-cards"),
+    'Rejected': document.getElementById("lane-rejected-cards")
+  };
+  
+  // Clear previous cards
+  Object.keys(lanes).forEach(k => {
+    if (lanes[k]) lanes[k].innerHTML = '';
+  });
+  
+  const statusCounts = { 'Discovered': 0, 'Applied': 0, 'Interviewing': 0, 'Offered': 0, 'Rejected': 0 };
+
+  state.jobs.forEach(job => {
+    // Only map tracking statuses to kanban
+    if (!lanes[job.Status]) return;
+    
+    statusCounts[job.Status]++;
+    
+    const score = parseInt(job.AIMatchScore, 10) || 0;
+    let scoreClass = 'low';
+    if (score >= 80) scoreClass = 'high';
+    else if (score >= 60) scoreClass = 'medium';
+
+    const card = document.createElement("div");
+    card.className = "kanban-card";
+    card.draggable = true;
+    card.setAttribute("data-id", job.ID);
+    
+    card.innerHTML = `
+      <div class="kanban-card-company">${job.Company}</div>
+      <div class="kanban-card-role">${job.Role}</div>
+      <div style="font-size:11px; color:var(--text-muted); margin-bottom:8px;">
+        <i class="fas fa-map-marker-alt"></i> ${job.Location}
+      </div>
+      <div class="kanban-card-footer">
+        <span class="match-score-badge ${scoreClass}">${score}% Match</span>
+        <button class="glass-btn" style="padding: 2px 6px; font-size:11px;" onclick="showJobDetailModal('${job.ID}')">
+          <i class="fas fa-external-link-alt"></i>
+        </button>
+      </div>
+    `;
+    
+    // Drag Start Listener
+    card.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/plain", job.ID);
+      card.style.opacity = '0.5';
+    });
+    
+    card.addEventListener("dragend", () => {
+      card.style.opacity = '1';
+    });
+    
+    lanes[job.Status].appendChild(card);
+  });
+  
+  // Update lane counts
+  Object.keys(statusCounts).forEach(status => {
+    const countBadge = document.getElementById(`count-${status.toLowerCase()}`);
+    if (countBadge) countBadge.innerText = statusCounts[status];
+  });
+}
+
+// RENDER: TABLE GRID VIEW
+function renderTable() {
+  const tbody = document.getElementById("table-body");
+  if (!tbody) return;
+  
+  const searchVal = document.getElementById("table-search").value.toLowerCase();
+  
+  let list = [...state.jobs];
+  
+  // Filter
+  if (searchVal) {
+    list = list.filter(j => 
+      j.Company.toLowerCase().includes(searchVal) ||
+      j.Role.toLowerCase().includes(searchVal) ||
+      j.Location.toLowerCase().includes(searchVal) ||
+      j.Status.toLowerCase().includes(searchVal)
+    );
+  }
+  
+  // Sort
+  list.sort((a, b) => {
+    let valA = a[state.sortTableField];
+    let valB = b[state.sortTableField];
+    
+    if (state.sortTableField === 'AIMatchScore') {
+      valA = parseInt(valA, 10) || 0;
+      valB = parseInt(valB, 10) || 0;
+    } else {
+      valA = String(valA).toLowerCase();
+      valB = String(valB).toLowerCase();
+    }
+    
+    if (valA < valB) return state.sortTableAsc ? -1 : 1;
+    if (valA > valB) return state.sortTableAsc ? 1 : -1;
+    return 0;
+  });
+  
+  if (list.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:30px; color:var(--text-secondary);">No internships found.</td></tr>`;
+    return;
+  }
+  
+  tbody.innerHTML = list.map(job => `
+    <tr>
+      <td style="font-weight: 600;">${job.Company}</td>
+      <td>${job.Role}</td>
+      <td>${job.Location}</td>
+      <td><span class="match-score-badge ${parseInt(job.AIMatchScore,10) >= 80 ? 'high' : parseInt(job.AIMatchScore,10) >= 60 ? 'medium' : 'low'}">${job.AIMatchScore}%</span></td>
+      <td>
+        <select class="glass-input" style="padding:4px 8px; width:auto;" onchange="updateJobStatusDirect('${job.ID}', this.value)">
+          <option value="Discovered" ${job.Status === 'Discovered' ? 'selected' : ''}>Discovered</option>
+          <option value="Applied" ${job.Status === 'Applied' ? 'selected' : ''}>Applied</option>
+          <option value="Interviewing" ${job.Status === 'Interviewing' ? 'selected' : ''}>Interviewing</option>
+          <option value="Offered" ${job.Status === 'Offered' ? 'selected' : ''}>Offered</option>
+          <option value="Rejected" ${job.Status === 'Rejected' ? 'selected' : ''}>Rejected</option>
+          <option value="Archived" ${job.Status === 'Archived' ? 'selected' : ''}>Archived</option>
+        </select>
+      </td>
+      <td>${job.Deadline || 'TBD'}</td>
+      <td>
+        <div style="display:flex; gap:6px;">
+          <button class="glass-btn" style="padding:4px 8px; font-size:12px;" onclick="showJobDetailModal('${job.ID}')">Edit</button>
+          <button class="glass-btn" style="padding:4px 8px; font-size:12px; color:var(--danger);" onclick="deleteJobDirect('${job.ID}')"><i class="fas fa-trash"></i></button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function handleTableSort(field) {
+  if (state.sortTableField === field) {
+    state.sortTableAsc = !state.sortTableAsc;
+  } else {
+    state.sortTableField = field;
+    state.sortTableAsc = true;
+  }
+  
+  // Update indicators
+  document.querySelectorAll(".data-table th i").forEach(icon => icon.className = 'fas fa-sort');
+  const activeHeader = document.querySelector(`.data-table th[data-sort="${field}"] i`);
+  if (activeHeader) {
+    activeHeader.className = state.sortTableAsc ? 'fas fa-sort-up' : 'fas fa-sort-down';
+  }
+  
+  renderTable();
+}
+
+// RENDER: SOP COVER LETTER VIEW
+function renderSOP() {
+  const dropdown = document.getElementById("sop-job-select");
+  if (!dropdown) return;
+  
+  // Populate dropdown with tracked active internships
+  const trackedJobs = state.jobs.filter(j => j.Status !== 'Discovered' && j.Status !== 'Archived');
+  
+  if (trackedJobs.length === 0) {
+    dropdown.innerHTML = `<option value="">-- No active tracked jobs --</option>`;
+    document.getElementById("sop-content-area").value = "Move internships to 'Applied' or 'Interviewing' in your Kanban or Table, then select them here to write tailored SOPs.";
+    return;
+  }
+  
+  const oldVal = dropdown.value;
+  dropdown.innerHTML = trackedJobs.map(j => `<option value="${j.ID}">${j.Company} - ${j.Role}</option>`).join('');
+  
+  if (oldVal && trackedJobs.some(j => j.ID === oldVal)) {
+    dropdown.value = oldVal;
+  } else {
+    dropdown.value = trackedJobs[0].ID;
+  }
+  
+  loadJobSOP();
+}
+
+function loadJobSOP() {
+  const jobId = document.getElementById("sop-job-select").value;
+  if (!jobId) return;
+  
+  const job = state.jobs.find(j => j.ID === jobId);
+  if (!job) return;
+  
+  document.getElementById("sop-content-area").value = job.SOPText || "Click 'Generate customized SOP' on the left to write a personalized Cover Letter utilizing your resume details.";
+  
+  document.getElementById("sop-job-details-title").innerText = `${job.Role} at ${job.Company}`;
+  document.getElementById("sop-job-desc").innerText = job.Description || 'No description loaded.';
+  document.getElementById("sop-job-req").innerText = job.Requirements || 'No requirements loaded.';
+}
+
+async function triggerSOPGeneration() {
+  const jobId = document.getElementById("sop-job-select").value;
+  if (!jobId) {
+    showToast("Please select a job first.", "warning");
+    return;
+  }
+  
+  try {
+    showToast("AI is writing cover letter tailored to your profile...", "info");
+    const res = await callBackend('generateSOPForJob', jobId);
+    if (res.success) {
+      state.jobs = res.jobs;
+      state.logs = res.logs;
+      
+      document.getElementById("sop-content-area").value = res.sopText;
+      showToast("Cover Letter drafted successfully!", "success");
+      renderApp();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function saveSOPChanges() {
+  const jobId = document.getElementById("sop-job-select").value;
+  const text = document.getElementById("sop-content-area").value;
+  if (!jobId) return;
+  
+  try {
+    const res = await callBackend('saveSOPText', jobId, text);
+    if (res.success) {
+      state.jobs = res.jobs;
+      showToast("Cover Letter saved to database.", "success");
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// RENDER: SETTINGS VIEW
+function renderSettings() {
+  const profile = state.profile;
+  document.getElementById("profile-name").value = profile.name || '';
+  document.getElementById("profile-email").value = profile.email || '';
+  document.getElementById("profile-skills").value = profile.skills || '';
+  document.getElementById("profile-resume").value = profile.resume_text || '';
+  document.getElementById("profile-roles").value = profile.target_roles || '';
+  document.getElementById("profile-model").value = profile.gemini_model || 'gemini-2.5-flash';
+  document.getElementById("profile-threshold").value = profile.alert_threshold || '70';
+  document.getElementById("profile-apikey").value = profile.gemini_api_key || '';
+  document.getElementById("profile-autoscrape").checked = String(profile.auto_scrape_enabled) === 'true';
+}
+
+async function saveSettings(e) {
+  if (e) e.preventDefault();
+  
+  const apiKey = document.getElementById("profile-apikey").value.trim();
+  if (apiKey && apiKey.indexOf('***') === -1 && apiKey.length > 100) {
+    showToast("Invalid Gemini API Key format (too long). Please check your key.", "error");
+    return;
+  }
+  
+  const payload = {
+    name: document.getElementById("profile-name").value,
+    email: document.getElementById("profile-email").value,
+    skills: document.getElementById("profile-skills").value,
+    resume_text: document.getElementById("profile-resume").value,
+    target_roles: document.getElementById("profile-roles").value,
+    gemini_model: document.getElementById("profile-model").value,
+    alert_threshold: document.getElementById("profile-threshold").value,
+    gemini_api_key: apiKey,
+    auto_scrape_enabled: document.getElementById("profile-autoscrape").checked ? "true" : "false"
+  };
+  
+  try {
+    const res = await callBackend('saveProfile', payload);
+    if (res.success) {
+      state.profile = payload;
+      // Re-initialize stars
+      if (payload.gemini_api_key) {
+        state.profile.gemini_api_key = "********************";
+      }
+      showToast("Settings and profile synced successfully.", "success");
+      loadPlatformData(); // Reload stats and logs
+    }
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+// ACTION: Move status from Discovery list directly to "Applied" tracker
+async function trackJob(jobId) {
+  try {
+    const res = await callBackend('updateJobStatus', jobId, 'Applied');
+    if (res.success) {
+      state.jobs = res.jobs;
+      state.logs = res.logs;
+      showToast("Job added to Tracker (Applied)!", "success");
+      renderApp();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function updateJobStatusDirect(jobId, newStatus) {
+  try {
+    const res = await callBackend('updateJobStatus', jobId, newStatus);
+    if (res.success) {
+      state.jobs = res.jobs;
+      state.logs = res.logs;
+      showToast(`Status updated to ${newStatus}`, "info");
+      renderApp();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function deleteJobDirect(jobId) {
+  if (!confirm("Are you sure you want to delete/archive this internship?")) return;
+  
+  try {
+    const res = await callBackend('deleteJob', jobId);
+    if (res.success) {
+      state.jobs = res.jobs;
+      state.logs = res.logs;
+      showToast("Internship removed.", "info");
+      renderApp();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// ACTION: Manual Web Discovery Triggers
+async function runManualJobScrape() {
+  try {
+    showToast("Scraping SimplifyJobs and Hacker News RSS (this takes a few seconds)...", "info");
+    const res = await callBackend('triggerManualScrape');
+    if (res.success) {
+      state.jobs = res.jobs;
+      state.logs = res.logs;
+      showToast(`Scrape completed! Discovered ${res.newJobsAdded} new matching internships.`, "success");
+      renderApp();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// ACTION: Custom Web URL Scraper
+async function runCustomUrlScrape() {
+  const url = document.getElementById("scrape-custom-url-input").value.trim();
+  if (!url) {
+    showToast("Please enter a careers webpage URL first.", "warning");
+    return;
+  }
+  
+  try {
+    showToast("Fetching URL content and extracting structured data with Gemini...", "info");
+    const res = await callBackend('addCustomJobUrl', url);
+    if (res.success) {
+      state.jobs = res.jobs;
+      state.logs = res.logs;
+      
+      document.getElementById("scrape-custom-url-input").value = '';
+      showToast(`Successfully extracted and scored: ${res.job.Role} at ${res.job.Company}!`, "success");
+      switchTab('discovery');
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// ACTION: Force AI evaluation for single job
+async function triggerSingleJobRescore(jobId) {
+  try {
+    showToast("AI evaluating match metrics...", "info");
+    const res = await callBackend('recomputeScore', jobId);
+    if (res.success) {
+      state.jobs = res.jobs;
+      state.logs = res.logs;
+      
+      // Update values in open detail modal if open
+      document.getElementById("detail-modal-score").innerText = `${res.score}%`;
+      document.getElementById("detail-modal-rationale").innerText = res.rationale;
+      
+      // Recolour score badge in modal
+      const scoreEl = document.getElementById("detail-modal-score");
+      scoreEl.className = 'match-score-badge ' + (res.score >= 80 ? 'high' : res.score >= 60 ? 'medium' : 'low');
+      
+      showToast("Score updated successfully.", "success");
+      renderApp();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// ACTION: Save manual job creation form
+async function saveManualJob(e) {
+  if (e) e.preventDefault();
+  
+  const payload = {
+    Company: document.getElementById("add-company").value,
+    Role: document.getElementById("add-role").value,
+    Location: document.getElementById("add-location").value,
+    URL: document.getElementById("add-url").value,
+    Description: document.getElementById("add-desc").value,
+    Requirements: document.getElementById("add-req").value,
+    Deadline: document.getElementById("add-deadline").value,
+    Status: document.getElementById("add-status").value
+  };
+  
+  try {
+    const res = await callBackend('addJobManual', payload);
+    if (res.success) {
+      state.jobs = res.jobs;
+      state.logs = res.logs;
+      
+      // Reset form and close
+      document.getElementById("manual-job-form").reset();
+      closeModal('modal-add-job');
+      showToast("Manual internship tracked successfully.", "success");
+      renderApp();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// Diagnostic API Self-Check
+async function runDiagnosticCheck() {
+  try {
+    showToast("Running database and logic diagnostics...", "info");
+    const res = await callBackend('runBackendTests');
+    if (res.status === 'SUCCESS') {
+      alert("Diagnostic PASSED!\n\n" + res.message);
+    } else {
+      alert("Diagnostic FAILED:\n\n" + res.message);
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// Importer Actions
+async function seedDefaultCuratedList() {
+  try {
+    showToast("Retrieving 32 flagship ML/AI internships curation list...", "info");
+    const res = await callBackend('getDefaultTsvSeed');
+    if (res.success && res.tsvText) {
+      document.getElementById("import-tsv-area").value = res.tsvText;
+      showToast("Flagship list loaded into paste buffer area. Click 'Import Paste' to import.", "success");
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function submitExcelImport() {
+  const text = document.getElementById("import-tsv-area").value.trim();
+  if (!text) {
+    showToast("Paste area is empty. Please enter TSV text or seed the list first.", "warning");
+    return;
+  }
+  
+  try {
+    showToast("Importing curation spreadsheet rows into database...", "info");
+    const res = await callBackend('importTsvData', text);
+    if (res.success) {
+      state.jobs = res.jobs;
+      state.logs = res.logs;
+      
+      document.getElementById("import-tsv-area").value = '';
+      showToast("Successfully imported " + res.count + " internships from TSV!", "success");
+      
+      switchTab('dashboard');
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+
+// DETAIL MODAL LOGIC
+function showJobDetailModal(jobId) {
+  state.selectedJobId = jobId;
+  const job = state.jobs.find(j => j.ID === jobId);
+  if (!job) return;
+  
+  // Set text
+  document.getElementById("detail-modal-title").innerText = `${job.Role} at ${job.Company}`;
+  document.getElementById("detail-company").value = job.Company;
+  document.getElementById("detail-role").value = job.Role;
+  document.getElementById("detail-location").value = job.Location;
+  document.getElementById("detail-url").value = job.URL;
+  document.getElementById("detail-deadline").value = job.Deadline || '';
+  document.getElementById("detail-desc").value = job.Description || '';
+  document.getElementById("detail-req").value = job.Requirements || '';
+  document.getElementById("detail-notes").value = job.Notes || '';
+  
+  // AI score section
+  const score = parseInt(job.AIMatchScore, 10) || 0;
+  const scoreEl = document.getElementById("detail-modal-score");
+  scoreEl.innerText = `${score}%`;
+  scoreEl.className = 'match-score-badge ' + (score >= 80 ? 'high' : score >= 60 ? 'medium' : 'low');
+  
+  // Markdown parsing (basic formatting mapping)
+  document.getElementById("detail-modal-rationale").innerText = job.AIRationale || 'AI Match rationale has not been calculated for this listing.';
+  
+  // Show modal
+  openModal('modal-job-detail');
+}
+
+async function saveJobDetailModalFields() {
+  if (!state.selectedJobId) return;
+  
+  const payload = {
+    Company: document.getElementById("detail-company").value,
+    Role: document.getElementById("detail-role").value,
+    Location: document.getElementById("detail-location").value,
+    URL: document.getElementById("detail-url").value,
+    Deadline: document.getElementById("detail-deadline").value,
+    Description: document.getElementById("detail-desc").value,
+    Requirements: document.getElementById("detail-req").value,
+    Notes: document.getElementById("detail-notes").value
+  };
+  
+  try {
+    const res = await callBackend('updateJobFields', state.selectedJobId, payload);
+    if (res.success) {
+      state.jobs = res.jobs;
+      showToast("Internship details updated in database.", "success");
+      closeModal('modal-job-detail');
+      renderApp();
+    }
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+// Modal open/close actions
+function openModal(modalId) {
+  document.getElementById(modalId).classList.add("active");
+}
+
+function closeModal(modalId) {
+  document.getElementById(modalId).classList.remove("active");
+  if (modalId === 'modal-job-detail') {
+    state.selectedJobId = null;
+  }
+}
+
+// Drag and Drop implementation
+function setupEventListeners() {
+  // Navigation
+  document.querySelectorAll(".menu-item").forEach(item => {
+    item.addEventListener("click", () => {
+      const tabId = item.getAttribute("data-tab");
+      if (tabId) switchTab(tabId);
+    });
+  });
+  
+  // Drag over columns
+  const columns = document.querySelectorAll(".kanban-column");
+  columns.forEach(col => {
+    col.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      col.classList.add("dragover");
+    });
+    
+    col.addEventListener("dragleave", () => {
+      col.classList.remove("dragover");
+    });
+    
+    col.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      col.classList.remove("dragover");
+      
+      const jobId = e.dataTransfer.getData("text/plain");
+      const laneId = col.id; // e.g. "lane-applied"
+      const statusMapping = {
+        'lane-discovered': 'Discovered',
+        'lane-applied': 'Applied',
+        'lane-interviewing': 'Interviewing',
+        'lane-offered': 'Offered',
+        'lane-rejected': 'Rejected'
+      };
+      
+      const newStatus = statusMapping[laneId];
+      if (jobId && newStatus) {
+        // Optimistic UI updates
+        const jobIndex = state.jobs.findIndex(j => j.ID === jobId);
+        if (jobIndex !== -1 && state.jobs[jobIndex].Status !== newStatus) {
+          state.jobs[jobIndex].Status = newStatus;
+          renderKanban();
+          
+          // Perform server write
+          try {
+            const res = await callBackend('updateJobStatus', jobId, newStatus);
+            if (res.success) {
+              state.jobs = res.jobs;
+              state.logs = res.logs;
+              showToast(`Status updated to ${newStatus}`, "info");
+              renderApp();
+            }
+          } catch(err) {
+            // Revert on error
+            loadPlatformData();
+          }
+        }
+      }
+    });
+  });
+}
+</script>

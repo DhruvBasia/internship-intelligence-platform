@@ -1,0 +1,24 @@
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment & credentials (safety first)
+.env
+.env*.local
+*.key
+*.pem
+
+# Dependencies & build outputs
+node_modules/
+dist/
+build/
+
+# Logs
+*.log
