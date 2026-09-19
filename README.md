@@ -10,6 +10,27 @@ An intelligent, full-stack internship aggregator, AI evaluation engine, and appl
 
 ---
 
+<div align="center">
+  <h3>🎬 Product Launch Showcase (30s)</h3>
+  <a href="media/interniq-launch-30s.mp4">
+    <img src="media/interniq-poster.jpg" alt="InternIQ 30-Second Launch Video" width="880" style="border-radius: 14px; box-shadow: 0 16px 40px rgba(0,0,0,0.12);" />
+  </a>
+  <p>
+    🍿 <b><a href="media/interniq-launch-30s.mp4">▶ Click Here to Watch the 30-Second Launch Tour (1080p Full HD MP4)</a></b>
+  </p>
+</div>
+
+<br />
+
+### ⚡ Feature Highlights
+
+| 🔍 **Live Discovery & Ingestion** | 🎯 **Gemini Fit Scoring** | 📋 **Interactive Kanban Pipeline** |
+| :---: | :---: | :---: |
+| <img src="media/hero-search.jpg" width="280" alt="Job Discovery" style="border-radius: 8px;" /> | <img src="media/hero-match.jpg" width="280" alt="Gemini Fit Match" style="border-radius: 8px;" /> | <img src="media/hero-kanban.jpg" width="280" alt="Kanban Pipeline" style="border-radius: 8px;" /> |
+| *Automated multi-feed scraping & deduplication* | *AI resume match analysis & interview tips* | *Visual stage management & status tracking* |
+
+---
+
 ## Overview
 
 The **Internship Intelligence Platform** helps students and early-career developers discover, prioritize, and manage internship opportunities. It automatically aggregates job listings from top sources, uses **Google Gemini AI** to score the candidate-job fit based on the user's custom profile and skills, and provides a modern, glassmorphic Single Page Application (SPA) with an interactive **Kanban Board** and **Analytics Dashboard**.
