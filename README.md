@@ -1,4 +1,4 @@
-# 🚀 Internship Intelligence Platform
+# Internship Intelligence Platform
 
 An intelligent, full-stack internship aggregator, AI evaluation engine, and application tracker built on **Google Apps Script**, powered by **Google Gemini AI**, and utilizing **Google Sheets** as a serverless relational database.
 
@@ -10,33 +10,33 @@ An intelligent, full-stack internship aggregator, AI evaluation engine, and appl
 
 ---
 
-## 🌟 Overview
+## Overview
 
 The **Internship Intelligence Platform** helps students and early-career developers discover, prioritize, and manage internship opportunities. It automatically aggregates job listings from top sources, uses **Google Gemini AI** to score the candidate-job fit based on the user's custom profile and skills, and provides a modern, glassmorphic Single Page Application (SPA) with an interactive **Kanban Board** and **Analytics Dashboard**.
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-- 🤖 **Gemini AI Match & Scoring**:
+- **Gemini AI Match & Scoring**:
   - Automatically assesses job descriptions and requirements against your target roles, skills, and background.
   - Computes an objective match percentage and generates concise AI rationales and interview preparation tips.
-- 🌐 **Automated Multi-Source Job Scraper**:
+- **Automated Multi-Source Job Scraper**:
   - Aggregates listings from **SimplifyJobs** (Summer tech internships), **AI-Jobs.net** RSS feed, and **Hacker News Jobs** RSS.
   - Deduplicates records and tags entries automatically.
-- 📋 **Interactive Kanban Pipeline**:
+- **Interactive Kanban Pipeline**:
   - Visual stage management: *Discovered*, *Applied*, *Interviewing*, *Offer*, *Rejected*, and *Archived*.
   - Update application stages and statuses seamlessly with instant database persistence.
-- 📊 **Analytics & Insights Dashboard**:
+- **Analytics & Insights Dashboard**:
   - Real-time Chart.js visualizations showing application progress, conversion funnels, and match score distributions.
-- 🗄️ **Zero-Cost Serverless Backend**:
+- **Zero-Cost Serverless Backend**:
   - Uses **Google Sheets** as a free, scalable, relational database with dedicated sheets for Jobs, User Profile, Applications, and Activity Logs.
-- 🔒 **Privacy & Security First**:
+- **Privacy & Security First**:
   - Sensitive API keys are stored in `PropertiesService.getUserProperties()` and masked (`********************`) before reaching the client.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```mermaid
 flowchart TD
@@ -72,7 +72,7 @@ flowchart TD
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```
 ├── Code.js              # Apps Script entry point, routing, and RPC endpoints
@@ -88,7 +88,7 @@ flowchart TD
 
 ---
 
-## 🚀 Getting Started & Deployment
+## Getting Started & Deployment
 
 ### 1. Create a Google Apps Script Project
 1. Go to [script.google.com](https://script.google.com/) and click **New Project**.
@@ -121,7 +121,7 @@ Copy the contents of each file from this repository into your Apps Script projec
 
 ---
 
-## 🛠️ Usage
+## Usage
 
 1. **Dashboard**: View your top metrics, target role alignment, and weekly activity.
 2. **Discovery Hub**: Browse aggregated internship postings, trigger new scrapers, or add custom roles manually.
@@ -131,13 +131,13 @@ Copy the contents of each file from this repository into your Apps Script projec
 
 ---
 
-## 👨‍💻 Author
+## Author
 
 **Dhruv Basia**
 - GitHub: [@DhruvBasia](https://github.com/DhruvBasia)
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](LICENSE).
