@@ -129,7 +129,8 @@ function interleaveBySource(jobs: RawJob[]): RawJob[] {
 
 /** Mark promising, never-analysed jobs for background AI analysis. Caller holds the lock. */
 function queueForAi(rows: JobRow[], settings: Settings): void {
-  if (settings.ai.provider === 'none' || !settings.ai.autoAnalyze) return;
+  // Only queue when a working client exists; otherwise jobs would sit "queued" forever.
+  if (!settings.ai.autoAnalyze || !getClient(settings)) return;
   const toQueue = rows.filter((r) => r.aiStatus === 'none' && r.score >= settings.ai.autoMinScore && r.stage !== 'archived' && r.stage !== 'rejected');
   if (!toQueue.length) return;
   const t = jobsTable();

@@ -64,7 +64,7 @@ function ColumnChart({ data, title, unit }: { data: Datum[]; title: string; unit
   const h = hover !== null ? data[hover] : null;
   return (
     <div class="chart" ref={ref} onMouseLeave={() => setHover(null)}>
-      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={title}>
+      <svg height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={title}>
         {ticks.map((t) => (
           <g>
             <line class={t === 0 ? 'baseline' : 'gridline'} x1={pad.l} x2={W - pad.r} y1={y(t)} y2={y(t)} />

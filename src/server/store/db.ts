@@ -189,9 +189,14 @@ export function flushActivity(): void {
   if (!pending.length) return;
   state.pendingActivity = [];
   try {
-    const t = table<ActivityEntry>(ACTIVITY);
-    t.insert(pending);
-    t.trim(3000, 1000);
+    // Appends compute their start row from getLastRow(), so two executions
+    // writing at once could overwrite each other's rows: serialise them.
+    withUserLock(() => {
+      state.tables.delete(ACTIVITY.name);
+      const t = table<ActivityEntry>(ACTIVITY);
+      t.insert(pending);
+      t.trim(3000, 1000);
+    }, 5_000);
   } catch (e) {
     log.warn('activity.flush_failed', { message: String(e) });
   }

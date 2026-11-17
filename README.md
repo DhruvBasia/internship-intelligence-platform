@@ -31,7 +31,7 @@ v1 was a single-user Apps Script app. v2 is a rebuild for real use by many stude
 | Sources | Hard-coded Summer 2026 list; two dead RSS feeds | Season-aware SimplifyJobs, follow any Greenhouse/Lever/Ashby company, HN, WWR, any job URL |
 | Security | Key in URL query, `ALLOWALL` framing, unescaped scraped HTML in UI and email | Key in header, default framing, escaped rendering everywhere, formula-injection guard, http(s)-only links |
 | Permissions | Full Gmail + full Drive | Spreadsheets, send-mail-as-you, triggers, URL fetch, email address |
-| Engineering | Hand-copied `.gs` files, no tests | TypeScript, esbuild, 65 tests (including end-to-end runs of the built bundle), CI, local dev harness |
+| Engineering | Hand-copied `.gs` files, no tests | TypeScript, esbuild, 67 tests (including end-to-end runs of the built bundle), CI, local dev harness |
 
 ## Features
 
@@ -116,7 +116,7 @@ Then open <http://localhost:5178>. Deep links like `?view=insights&theme=dark` w
 ### Test
 
 ```bash
-npm run check        # typecheck (server, client, tests) + 65 tests + production build
+npm run check        # typecheck (server, client, tests) + 67 tests + production build
 ```
 
 The tests cover the matcher, every source parser, CSV/TSV import, prompt construction and output validation, digest escaping, and end-to-end runs of the built `Code.js` against the fakes. Those runs cover first-run setup, refresh and de-duplication, formula-injection safety, CRUD and validation, AI batching, key handling, quota backoff and budgets, triggers and digest, v1 in-place migration, rate limiting, and delete-everything.

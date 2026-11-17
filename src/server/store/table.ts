@@ -29,10 +29,11 @@ const BULK_REWRITE_THRESHOLD = 12;
 
 function guardText(s: string): string {
   const t = s.length > MAX_CELL ? s.slice(0, MAX_CELL) : s;
-  // Leading apostrophe forces text: blocks formulas and stops Sheets from
-  // coercing ids/dates/booleans. Sheets strips it again on read.
-  if (/^[=+\-@'\d]/.test(t) || /^(true|false)$/i.test(t)) return "'" + t;
-  return t;
+  // A leading apostrophe forces the cell to text: it blocks formulas
+  // (=, +, -, @) and stops Sheets coercing values such as "Jan 1", "50%",
+  // "$5", "9:00", "TRUE" or ids into dates/numbers. Sheets hides the
+  // apostrophe and getValues() returns the original string.
+  return t === '' ? '' : "'" + t;
 }
 
 export function toCell(value: unknown, type: ColType): unknown {

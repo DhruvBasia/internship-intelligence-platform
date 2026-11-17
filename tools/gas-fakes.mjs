@@ -17,8 +17,11 @@ function coerce(v) {
   if (typeof v !== 'string') return v;
   if (v.startsWith("'")) return v.slice(1);
   if (/^-?\d+(\.\d+)?$/.test(v) && v.length < 16) return Number(v);
+  if (/^-?\d+(\.\d+)?%$/.test(v)) return Number(v.slice(0, -1)) / 100;
   if (/^(true|false)$/i.test(v)) return v.toLowerCase() === 'true';
-  if (/^=/.test(v)) return `#FORMULA(${v})`;
+  if (/^[=+\-@]/.test(v)) return `#FORMULA(${v})`;
+  // Like Sheets, short month-day strings become dates.
+  if (/^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \d{1,2}(, \d{4})?$/i.test(v)) return new Date(`${v}${/\d{4}$/.test(v) ? '' : ', 2026'}`);
   return v;
 }
 

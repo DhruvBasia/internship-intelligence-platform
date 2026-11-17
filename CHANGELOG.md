@@ -14,7 +14,7 @@ A rebuild of InternIQ for production use by many students. Still Google Apps Scr
 - Hourly background worker: daily refresh at the user's local hour, AI queue draining, email digest.
 - CSV/TSV import (Excel, Sheets, v1 format), import from any Google Sheet, research-programmes pack (32 recurring programmes), CSV export, delete-all-data.
 - In-place v1 migration (jobs, cover letters, profile, Gemini key, retired v1 trigger).
-- TypeScript + esbuild build, 65 tests including end-to-end runs of the built bundle against Apps Script fakes, local dev harness, GitHub Actions CI and optional deploy.
+- TypeScript + esbuild build, 67 tests including end-to-end runs of the built bundle against Apps Script fakes, local dev harness, GitHub Actions CI and optional deploy.
 
 ### Security and privacy
 - API keys sent in headers, stored only in user properties, never returned to the browser.

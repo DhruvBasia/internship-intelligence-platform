@@ -113,6 +113,21 @@ describe('jobs CRUD and safety', () => {
     expect(listed.notes).toBe('@SUM(1)');
   });
 
+  it('keeps date-like, percent-like and boolean-like text exactly as typed', () => {
+    const s = boot();
+    const { job } = s.ok('createJob', { company: 'TRUE', role: 'Jan 1', location: '50%', notes: '0042' });
+    const listed = s.ok('listJobs').jobs.find((j: any) => j.id === job.id);
+    expect([listed.company, listed.role, listed.location, listed.notes]).toEqual(['TRUE', 'Jan 1', '50%', '0042']);
+  });
+
+  it('never queues AI work when no key is configured', () => {
+    const s = boot();
+    s.ok('saveProfile', PROFILE);
+    s.ok('saveSettings', { ai: { provider: 'gemini', autoMinScore: 0 } });
+    const jobs = s.ok('refreshNow').jobs as any[];
+    expect(jobs.some((j) => j.aiStatus === 'queued')).toBe(false);
+  });
+
   it('rejects duplicates, bad input and unknown fields', () => {
     const s = boot();
     s.ok('createJob', { company: 'Acme', role: 'ML Intern', url: 'https://acme.example/1' });
