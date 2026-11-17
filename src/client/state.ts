@@ -196,9 +196,22 @@ export function applyBoot(data: BootstrapData): void {
 /** 'loading' → 'setup' (first run is taking a while) → 'slow' (much longer than expected). */
 export const bootPhase = signal<'loading' | 'setup' | 'slow'>('loading');
 
+/** Boot data embedded by doGet as base64url JSON (see server main.ts). */
+function readEmbeddedBoot(): { data: BootstrapData | null; error: string } | null {
+  try {
+    const raw = document.getElementById('iip-boot')?.textContent?.trim() ?? '';
+    if (!raw || raw.includes('__IIP_BOOT')) return null;
+    const bin = atob(raw.replace(/-/g, '+').replace(/_/g, '/'));
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
+}
+
 export async function loadBoot(): Promise<void> {
-  const embedded = window.__IIP_BOOT__ as { data: BootstrapData | null; error: string } | string | undefined;
-  if (embedded && typeof embedded === 'object' && embedded.data) {
+  const embedded = readEmbeddedBoot();
+  if (embedded && embedded.data) {
     applyBoot(embedded.data);
     return;
   }

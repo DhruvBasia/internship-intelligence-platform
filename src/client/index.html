@@ -16,15 +16,63 @@
     <div id="app">
       <div class="boot">
         <div class="boot-mark" aria-hidden="true">IQ</div>
-        <p>Loading your internships…</p>
+        <p>Starting InternIQ…</p>
       </div>
     </div>
     <noscript>InternIQ needs JavaScript enabled.</noscript>
     <script>
-      window.__IIP_BOOT__ = "__IIP_BOOT__";
+      /* Startup errors would otherwise be invisible inside Apps Script's sandboxed frame. */
+      (function () {
+        function show(msg) {
+          if (window.__IIP_STARTED__) return;
+          var el = document.getElementById('app');
+          if (!el) return;
+          el.innerHTML = '';
+          var box = document.createElement('div');
+          box.className = 'boot';
+          var p = document.createElement('p');
+          p.style.maxWidth = '640px';
+          p.style.whiteSpace = 'pre-wrap';
+          p.style.fontSize = '12px';
+          p.textContent = 'InternIQ could not start. Please send this to the developer:\n\n' + String(msg).slice(0, 1500);
+          box.appendChild(p);
+          el.appendChild(box);
+        }
+        window.__IIP_SHOW_ERROR__ = show;
+        window.addEventListener('error', function (e) {
+          show((e.error && e.error.stack) || e.message || 'Unknown error');
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason;
+          show((r && (r.stack || r.message)) || String(r));
+        });
+      })();
     </script>
+    <!--
+      Apps Script rewrites inline scripts and drops anything that looks like a line comment,
+      which corrupts minified code. So the app bundle and the boot data travel as base64url
+      text and are decoded here. Keep every script in this file free of double slashes.
+    -->
+    <script type="text/plain" id="iip-boot">__IIP_BOOT_B64__</script>
+    <script type="text/plain" id="iip-bundle">/*__IIP_JS_B64__*/</script>
     <script>
-      /*__IIP_JS__*/
+      (function () {
+        try {
+          var raw = document.getElementById('iip-bundle').textContent.replace(/\s+/g, '');
+          var bin = atob(raw.replace(/-/g, '+').replace(/_/g, '\x2f'));
+          var bytes = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          var code = new TextDecoder('utf-8').decode(bytes);
+          var el = document.createElement('script');
+          /* The flag is set first, so it also records a run that later threw. */
+          el.textContent = 'window.__IIP_CODE_RAN__ = true;\n' + code;
+          document.body.appendChild(el);
+          /* Only if a content policy blocked the injected script. */
+          if (!window.__IIP_CODE_RAN__) (0, eval)(code);
+        } catch (e) {
+          if (window.__IIP_SHOW_ERROR__) window.__IIP_SHOW_ERROR__('Could not load the app code: ' + ((e && e.stack) || e));
+        }
+      })();
     </script>
   </body>
 </html>

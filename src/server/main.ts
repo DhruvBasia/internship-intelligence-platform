@@ -14,14 +14,13 @@ import { job, rpc } from './rpc';
 import { flushActivity, resetRequestState, SCHEMA_VERSION } from './store/db';
 import { workspaceReady } from './store/records';
 
-/** JSON that is safe to place inside an inline <script>. */
-function scriptSafeJson(value: unknown): string {
-  return JSON.stringify(value)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
+/**
+ * Boot data as base64url text: HtmlService rewrites inline scripts (it strips anything
+ * that looks like a // comment), so data must not travel as JavaScript. Base64url also
+ * can never contain "<", so it is safe inside the page.
+ */
+function bootPayload(value: unknown): string {
+  return Utilities.base64EncodeWebSafe(JSON.stringify(value), Utilities.Charset.UTF_8);
 }
 
 export function doGet(): GoogleAppsScript.HTML.HtmlOutput {
@@ -42,8 +41,8 @@ export function doGet(): GoogleAppsScript.HTML.HtmlOutput {
     }
   }
   const page = HtmlService.createHtmlOutputFromFile('index').getContent();
-  // Function replacer: a string replacement would interpret "$&" etc. inside the JSON.
-  const html = page.replace('"__IIP_BOOT__"', () => scriptSafeJson({ data, error }));
+  // Function replacer: a string replacement would interpret "$&" etc. inside the payload.
+  const html = page.replace('__IIP_BOOT_B64__', () => bootPayload({ data, error }));
   return HtmlService.createHtmlOutput(html)
     .setTitle('InternIQ · internship intelligence')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')

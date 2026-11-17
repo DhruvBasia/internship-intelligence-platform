@@ -327,6 +327,9 @@ export function createGasGlobals(opts = {}) {
       getUuid: () => crypto.randomUUID(),
       sleep: () => undefined,
       base64DecodeWebSafe: (data) => Array.from(Buffer.from(data, 'base64url')),
+      // Like Apps Script: web-safe alphabet with "=" padding.
+      base64EncodeWebSafe: (data) => Buffer.from(String(data), 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_'),
+      Charset: { UTF_8: 'UTF-8', US_ASCII: 'US-ASCII' },
       newBlob: (bytes) => ({ getDataAsString: () => Buffer.from(bytes).toString('utf8') }),
       formatDate: (date, tz, fmt) => {
         const parts = Object.fromEntries(

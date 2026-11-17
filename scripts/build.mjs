@@ -94,11 +94,13 @@ export async function buildClient() {
   const js = result.outputFiles.find((f) => f.path.endsWith('.js'))?.text ?? '';
   const css = result.outputFiles.find((f) => f.path.endsWith('.css'))?.text ?? '';
   const template = await readFile(join(root, 'src/client/index.html'), 'utf8');
-  // A literal "</script" inside the bundle would end the inline script early.
-  const safeJs = js.replace(/<\/script/gi, '<\\/script');
+  // HtmlService strips "//"-looking comments from inline scripts, breaking minified code,
+  // so the bundle ships as base64url text (alphabet A–Z a–z 0–9 - _, never "/" or "*").
+  const b64 = Buffer.from(js, 'utf8').toString('base64url');
+  if (!template.includes('/*__IIP_JS_B64__*/')) throw new Error('index.html is missing the bundle placeholder');
   const html = template
     .replace('/*__IIP_CSS__*/', () => css)
-    .replace('/*__IIP_JS__*/', () => safeJs);
+    .replace('/*__IIP_JS_B64__*/', () => b64);
   return { html, jsBytes: js.length, cssBytes: css.length };
 }
 

@@ -20,7 +20,7 @@ beforeAll(async () => {
 export function boot(opts: { fetchImpl?: Fetch; html?: string; inbox?: () => unknown[]; code?: string } = {}) {
   const created = createGasGlobals({
     fetchImpl: (opts.fetchImpl ?? fixtureFetch) as never,
-    htmlFiles: { index: opts.html ?? '<script>window.__IIP_BOOT__ = "__IIP_BOOT__";</script>' },
+    htmlFiles: { index: opts.html ?? '<script type="text/plain" id="iip-boot">__IIP_BOOT_B64__</script>' },
     inbox: opts.inbox,
   } as never);
   const globals = created.globals;
@@ -35,6 +35,12 @@ export function boot(opts: { fetchImpl?: Fetch; html?: string; inbox?: () => unk
   };
   const ss = () => state.spreadsheets[state.spreadsheets.length - 1];
   return { ctx: ctx as any, state, call, ok, ss };
+}
+
+/** Decodes the base64url boot payload doGet embeds in the page. */
+function bootData(html: string): any {
+  const raw = /id="iip-boot">([^<]*)<\/script>/.exec(html)![1]!;
+  return JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
 }
 
 const PROFILE = {
@@ -64,25 +70,24 @@ describe('first run', () => {
   it('sends the page immediately on a first visit and leaves setup to the client', () => {
     const s = boot();
     const out = s.ctx.doGet();
-    const payload = JSON.parse(/window\.__IIP_BOOT__ = (.*);<\/script>/.exec(out.getContent())![1]!);
-    expect(payload).toEqual({ data: null, error: '' });
+    expect(bootData(out.getContent())).toEqual({ data: null, error: '' });
     expect(s.state.spreadsheets).toHaveLength(0);
     s.ok('bootstrap');
-    const again = JSON.parse(/window\.__IIP_BOOT__ = (.*);<\/script>/.exec(s.ctx.doGet().getContent())![1]!);
+    const again = bootData(s.ctx.doGet().getContent());
     expect(again.data.programs.length).toBeGreaterThan(100);
   });
 
-  it('serves the page with a script-safe boot payload and safe framing', () => {
+  it('serves the boot payload as inert base64url text with safe framing', () => {
     const s = boot();
     s.ok('bootstrap');
-    s.ok('saveProfile', { ...PROFILE, name: '</script><script>alert(1)</script>' });
+    const name = '</script><script>alert(1)</script> // Dhruv · ✓ https://x.y';
+    s.ok('saveProfile', { ...PROFILE, name });
     const out = s.ctx.doGet();
     const html = out.getContent();
     expect(html).not.toContain('</script><script>alert');
-    expect(html).toContain('\\u003c/script\\u003e');
+    expect(/id="iip-boot">([^<]*)<\/script>/.exec(html)![1]).toMatch(/^[A-Za-z0-9_=-]+$/);
     expect(out.xframe).toBe('DEFAULT');
-    const payload = JSON.parse(/window\.__IIP_BOOT__ = (.*);<\/script>/.exec(html)![1]!);
-    expect(payload.data.profile.name).toBe('</script><script>alert(1)</script>');
+    expect(bootData(html).data.profile.name).toBe(name);
   });
 });
 
