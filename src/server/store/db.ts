@@ -13,7 +13,7 @@ type Spreadsheet = GoogleAppsScript.Spreadsheet.Spreadsheet;
 /** Same property name v1 used, so an in-place upgrade finds the user's existing sheet. */
 const PROP_SHEET_ID = 'SPREADSHEET_ID';
 const PROP_SCHEMA = 'iip.schema';
-export const SCHEMA_VERSION = '2.0';
+export const SCHEMA_VERSION = '2.1';
 const SHEET_TITLE = 'InternIQ: my internship tracker';
 
 /** Row shape of the lean "Jobs" sheet, read on almost every request. */
@@ -101,7 +101,106 @@ export const ACTIVITY: TableDef = {
   ],
 };
 
-const ALL_TABLES = [JOBS, JOB_TEXT, DOCS, ACTIVITY];
+export const PROGRAMS: TableDef = {
+  name: 'Studies',
+  columns: [
+    { key: 'id', type: 'string' },
+    { key: 'name', type: 'string' },
+    { key: 'org', type: 'string' },
+    { key: 'region', type: 'string' },
+    { key: 'stage', type: 'string' },
+    { key: 'deadline', type: 'string' },
+    { key: 'deadlineText', type: 'string' },
+    { key: 'confirmed', type: 'bool' },
+    { key: 'funding', type: 'string' },
+    { key: 'money', type: 'string' },
+    { key: 'fit', type: 'string' },
+    { key: 'starred', type: 'bool' },
+    { key: 'url', type: 'string' },
+    { key: 'requirements', type: 'string' },
+    { key: 'note', type: 'string' },
+    { key: 'myNotes', type: 'string' },
+    { key: 'docs', type: 'json' },
+    { key: 'key', type: 'string' },
+    { key: 'source', type: 'string' },
+    { key: 'createdAt', type: 'date' },
+    { key: 'updatedAt', type: 'date' },
+  ],
+};
+
+export const EXAMS: TableDef = {
+  name: 'Exams',
+  columns: [
+    { key: 'id', type: 'string' },
+    { key: 'name', type: 'string' },
+    { key: 'body', type: 'string' },
+    { key: 'category', type: 'string' },
+    { key: 'stage', type: 'string' },
+    { key: 'starred', type: 'bool' },
+    { key: 'field', type: 'string' },
+    { key: 'forYou', type: 'string' },
+    { key: 'forYouNote', type: 'string' },
+    { key: 'confidence', type: 'string' },
+    { key: 'events', type: 'json' },
+    { key: 'eligibility', type: 'string' },
+    { key: 'age', type: 'string' },
+    { key: 'url', type: 'string' },
+    { key: 'notes', type: 'string' },
+    { key: 'myNotes', type: 'string' },
+    { key: 'applicationNo', type: 'string' },
+    { key: 'key', type: 'string' },
+    { key: 'source', type: 'string' },
+    { key: 'createdAt', type: 'date' },
+    { key: 'updatedAt', type: 'date' },
+  ],
+};
+
+export const TASKS: TableDef = {
+  name: 'Tasks',
+  columns: [
+    { key: 'id', type: 'string' },
+    { key: 'title', type: 'string' },
+    { key: 'due', type: 'string' },
+    { key: 'allDay', type: 'bool' },
+    { key: 'area', type: 'string' },
+    { key: 'status', type: 'string' },
+    { key: 'source', type: 'string' },
+    { key: 'link', type: 'string' },
+    { key: 'notes', type: 'string' },
+    { key: 'refType', type: 'string' },
+    { key: 'refId', type: 'string' },
+    { key: 'mailId', type: 'string' },
+    { key: 'createdAt', type: 'date' },
+    { key: 'updatedAt', type: 'date' },
+  ],
+};
+
+export const MAIL: TableDef = {
+  name: 'Mail',
+  columns: [
+    { key: 'id', type: 'string' },
+    { key: 'date', type: 'date' },
+    { key: 'category', type: 'string' },
+    { key: 'status', type: 'string' },
+    { key: 'subject', type: 'string' },
+    { key: 'fromName', type: 'string' },
+    { key: 'from', type: 'string' },
+    { key: 'company', type: 'string' },
+    { key: 'role', type: 'string' },
+    { key: 'due', type: 'string' },
+    { key: 'allDay', type: 'bool' },
+    { key: 'area', type: 'string' },
+    { key: 'suggestedStage', type: 'string' },
+    { key: 'jobId', type: 'string' },
+    { key: 'taskId', type: 'string' },
+    { key: 'snippet', type: 'string' },
+    { key: 'threadId', type: 'string' },
+    { key: 'url', type: 'string' },
+    { key: 'createdAt', type: 'date' },
+  ],
+};
+
+const ALL_TABLES = [JOBS, JOB_TEXT, DOCS, ACTIVITY, PROGRAMS, EXAMS, TASKS, MAIL];
 
 interface RequestState {
   ss: Spreadsheet | null;

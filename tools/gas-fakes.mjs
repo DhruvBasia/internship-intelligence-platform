@@ -326,6 +326,8 @@ export function createGasGlobals(opts = {}) {
     Utilities: {
       getUuid: () => crypto.randomUUID(),
       sleep: () => undefined,
+      base64DecodeWebSafe: (data) => Array.from(Buffer.from(data, 'base64url')),
+      newBlob: (bytes) => ({ getDataAsString: () => Buffer.from(bytes).toString('utf8') }),
       formatDate: (date, tz, fmt) => {
         const parts = Object.fromEntries(
           new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: 'numeric', hourCycle: 'h23' })
@@ -351,5 +353,40 @@ export function createGasGlobals(opts = {}) {
       },
     },
   };
+  if (opts.inbox) {
+    // Gmail advanced service: list honours newer_than and returns everything else; get returns a MIME-shaped message.
+    const inbox = opts.inbox;
+    globals.Gmail = {
+      Users: {
+        Messages: {
+          list: (_user, { q, maxResults }) => {
+            state.gmailQueries = (state.gmailQueries ?? 0) + 1;
+            const days = Number(/newer_than:(\d+)d/.exec(q)?.[1] ?? 3650);
+            const cutoff = Date.now() - days * 86_400_000;
+            const hits = inbox().filter((m) => Number(m.internalDate) >= cutoff).slice(0, maxResults);
+            return { messages: hits.map((m) => ({ id: m.id, threadId: m.threadId })) };
+          },
+          get: (_user, id) => {
+            const m = inbox().find((x) => x.id === id);
+            if (!m) throw new Error('Not Found');
+            return {
+              id: m.id,
+              threadId: m.threadId,
+              snippet: m.body.slice(0, 120),
+              internalDate: m.internalDate,
+              payload: {
+                mimeType: 'multipart/alternative',
+                headers: [
+                  { name: 'From', value: m.from },
+                  { name: 'Subject', value: m.subject },
+                ],
+                parts: [{ mimeType: 'text/plain', body: { data: Buffer.from(m.body, 'utf8').toString('base64url') } }],
+              },
+            };
+          },
+        },
+      },
+    };
+  }
   return { globals, state };
 }

@@ -13,23 +13,50 @@ export interface Digest {
   html: string;
 }
 
-export function buildDigest(jobs: JobSummary[], opts: { name: string; threshold: number; appUrl: string }): Digest | null {
+export interface UpcomingItem {
+  /** YYYY-MM-DD or YYYY-MM-DDTHH:mm */
+  when: string;
+  title: string;
+}
+
+function whenLabel(when: string): string {
+  const d = new Date(when.length === 10 ? when + 'T12:00:00' : when);
+  if (Number.isNaN(d.getTime())) return when;
+  const day = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  return when.length > 10 ? `${day}, ${when.slice(11, 16)}` : day;
+}
+
+export function buildDigest(jobs: JobSummary[], opts: { name: string; threshold: number; appUrl: string; upcoming?: UpcomingItem[] }): Digest | null {
   const picks = jobs.slice(0, 12);
-  if (!picks.length) return null;
-  const subject = `${picks.length} new internship match${picks.length === 1 ? '' : 'es'} (${opts.threshold}+)`;
+  const soon = (opts.upcoming ?? []).slice(0, 12);
+  if (!picks.length && !soon.length) return null;
+  const subject = picks.length
+    ? `${picks.length} new internship match${picks.length === 1 ? '' : 'es'} (${opts.threshold}+)${soon.length ? ` · ${soon.length} due soon` : ''}`
+    : `${soon.length} thing${soon.length === 1 ? '' : 's'} due in the next 2 days`;
   const app = safeHttpUrl(opts.appUrl);
   const greeting = opts.name ? `Hi ${opts.name.split(' ')[0]},` : 'Hi,';
 
   const text = [
     greeting,
     '',
-    `${APP_NAME} found ${picks.length} new posting${picks.length === 1 ? '' : 's'} scoring ${opts.threshold} or more:`,
+    soon.length ? 'Due in the next 2 days:' : '',
+    ...soon.map((u) => `• ${whenLabel(u.when)}: ${u.title}`),
+    soon.length ? '' : '',
+    picks.length ? `${APP_NAME} found ${picks.length} new posting${picks.length === 1 ? '' : 's'} scoring ${opts.threshold} or more:` : '',
     '',
     ...picks.map((j) => `• ${j.score} · ${j.role} at ${j.company}${j.location ? ' (' + j.location + ')' : ''}\n  ${safeHttpUrl(j.url) || ''}`),
     '',
     app ? `Open ${APP_NAME}: ${app}` : '',
     'You can turn these emails off in Settings → Automation.',
   ].join('\n');
+  const soonHtml = soon.length
+    ? `<h2 style="font-size:15px;margin:18px 0 6px">Due in the next 2 days</h2><table role="presentation" style="width:100%;border-collapse:collapse">${soon
+        .map(
+          (u) =>
+            `<tr><td style="padding:6px 0;border-bottom:1px solid #eceef2;width:130px;color:#5b6472;font-size:13px">${escapeHtml(whenLabel(u.when))}</td><td style="padding:6px 0;border-bottom:1px solid #eceef2;font-size:14px">${escapeHtml(u.title)}</td></tr>`,
+        )
+        .join('')}</table>`
+    : '';
 
   const rows = picks
     .map((j) => {
@@ -56,7 +83,8 @@ export function buildDigest(jobs: JobSummary[], opts: { name: string; threshold:
   <div style="font-size:13px;color:#5b6472;letter-spacing:.02em">${APP_NAME} · daily matches</div>
   <h1 style="font-size:20px;margin:6px 0 16px">${escapeHtml(subject)}</h1>
   <p style="margin:0 0 8px">${escapeHtml(greeting)}</p>
-  <table role="presentation" style="width:100%;border-collapse:collapse">${rows}</table>
+  ${soonHtml}
+  ${picks.length ? `<h2 style="font-size:15px;margin:18px 0 6px">New matches</h2><table role="presentation" style="width:100%;border-collapse:collapse">${rows}</table>` : ''}
   ${app ? `<p style="margin:20px 0 0"><a href="${escapeHtml(app)}" style="display:inline-block;background:#1f3fbf;color:#ffffff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600">Open ${APP_NAME}</a></p>` : ''}
   <p style="font-size:12px;color:#8a93a3;margin:20px 0 0">You get this because daily digests are on in Settings → Automation.</p>
 </div></div>`;

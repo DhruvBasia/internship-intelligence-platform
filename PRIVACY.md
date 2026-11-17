@@ -25,6 +25,10 @@ You can open, export, share or delete the sheet like any other file.
 - **AI providers (optional, only if you add your own key).** When a job is analysed or a cover letter drafted, the posting text and your profile go to the provider you chose (Google Gemini, Groq, OpenRouter, or another OpenAI-compatible API), under your own key and that provider's terms. Email addresses, phone numbers and LinkedIn links are removed from your resume text first. Free tiers of some providers may use prompts to improve their models; read your provider's terms.
 - **Email.** If you turn on the daily digest, it is sent with your own Gmail account, to your own address only.
 
+## Email scanning (personal deployments only)
+
+Deployments built with mail enabled also ask for **read-only Gmail access** (`gmail.readonly`). Every hour they search your inbox for placement, application, admissions, exam and deadline emails and store the subject, sender, a short snippet and any detected date in your own sheet's Mail tab. InternIQ never sends, replies to, deletes, labels or archives email, and email content never leaves your Google account unless you run AI analysis on a job.
+
 ## Google permissions
 
 InternIQ asks for: managing spreadsheets (to create and update your tracker sheet), connecting to external services (job boards and your AI provider), sending email as you (the optional digest, to yourself), managing triggers (your optional daily refresh), and your email address (to address the digest). It does not read your Gmail or browse your Drive.

@@ -231,6 +231,38 @@ export const GEMINI_MODELS = {
   ],
 };
 
+/**
+ * Synthetic inbox for the Gmail fake. Dates are relative to "now" so the
+ * fixtures never go stale. Companies and people are invented.
+ */
+export function sampleInbox(now = Date.now()) {
+  const day = 86_400_000;
+  const iso = (ms) => new Date(ms).toISOString();
+  const fmt = (ms) => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  const msgs = [
+    { from: 'Placement Cell GGSIPU <cpc@ipu.ac.in>', subject: 'Northwind AI: Machine Learning Intern | Registration open', body: `Dear students,\nNorthwind AI is hiring Machine Learning Interns (6 months, stipend Rs 40,000). B.Tech AI&DS / CSE 2027 batch eligible.\nRegister on POD before ${fmt(now + 3 * day)}, 11:59 PM.\nRegards, CPC`, at: now - 2 * day },
+    { from: 'Lumen Labs Recruiting <no-reply@lumenlabs.ai>', subject: 'Thank you for applying to Lumen Labs', body: 'Hi Dhruv, we have received your application for the Data Science Intern role. Our team will review it and get back to you.', at: now - 6 * day },
+    { from: 'Lumen Labs Recruiting <no-reply@lumenlabs.ai>', subject: 'Lumen Labs: Online assessment for Data Science Intern', body: `Next step: please complete the HackerRank coding assessment by ${fmt(now + 4 * day)} 6:00 PM IST. The test link is valid for 72 hours.`, at: now - 1 * day },
+    { from: 'Kestrel Maps Talent <talent@kestrelmaps.com>', subject: 'Interview invitation – Software Engineer Intern', body: `Congratulations! You have been shortlisted. Your technical interview with Kestrel Maps is scheduled on ${fmt(now + 2 * day)} at 3:30 PM IST on Google Meet.`, at: now - 0.5 * day },
+    { from: 'Sable Security Careers <careers@sablesecurity.io>', subject: 'Update on your application', body: 'Thank you for your interest in Sable Security. Unfortunately, we will not be moving forward with your application at this time.', at: now - 3 * day },
+    { from: 'LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>', subject: '30+ new jobs for "machine learning intern"', body: 'Jobs you may be interested in…', at: now - 1 * day },
+    { from: 'Internshala <no-reply@internshala.com>', subject: 'Your OTP for login is 482910', body: 'Use this one-time password to log in.', at: now - 1 * day },
+    { from: 'Corizo <hello@corizo.in>', subject: 'Get an IBM-associated training & internship program certificate', body: 'Enroll now! Limited time offer, 60% off.', at: now - 2 * day },
+    { from: 'MBZUAI Admissions <admissions@mbzuai.ac.ae>', subject: 'MBZUAI MSc application: reminder to submit your recommendation letters', body: `Your referees must submit their letters before the application deadline of ${fmt(now + 28 * day)}. Applications close at 5:00 PM Gulf time.`, at: now - 1 * day },
+    { from: 'UPSC Online <noreply@upsc.gov.in>', subject: 'Registration number for your One Time Registration', body: 'Your OTR has been completed successfully. Keep your registration number safe for future examinations.', at: now - 4 * day },
+    { from: 'IELTS India <ielts@idp.com>', subject: 'IELTS test booking confirmed', body: `Your IELTS Academic test is confirmed for ${fmt(now + 10 * day)}. Please arrive by 8:00 AM with your passport.`, at: now - 0.2 * day },
+  ];
+  return msgs.map((m, i) => ({
+    id: (0x18f0000000 + i * 4097).toString(16),
+    threadId: (0x18f0000000 + i * 4097 + 1).toString(16),
+    from: m.from,
+    subject: m.subject,
+    body: m.body,
+    internalDate: String(Math.round(m.at)),
+    date: iso(m.at),
+  }));
+}
+
 /** Route a fake UrlFetchApp request to a fixture. */
 export function fixtureFetch(req) {
   const u = req.url;

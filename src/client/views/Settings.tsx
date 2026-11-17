@@ -7,10 +7,10 @@ import type { Board, Degree, ModelInfo, Profile, SettingsView as SV, WorkMode } 
 import { call, errorText } from '../api';
 import { copyText, downloadText, jobsToCsv } from '../lib/files';
 import { plural } from '../lib/format';
-import { addOpen, aiReady, jobs, profile, remember, saveProfile, saveSettings, setJobs, settings, sheetUrl, toast, toastError, usage, version } from '../state';
+import { addOpen, aiReady, features, jobs, profile, remember, saveProfile, saveSettings, setJobs, settings, sheetUrl, toast, toastError, usage, version } from '../state';
 import { Button, Callout, ChipsInput, ExtLink, Field, Meter, Toggle } from '../ui';
 
-type Tab = 'profile' | 'ai' | 'sources' | 'automation' | 'data';
+type Tab = 'profile' | 'ai' | 'sources' | 'automation' | 'mail' | 'data';
 
 export const ROLE_SUGGESTIONS = ['Machine Learning', 'Data Science', 'Software Engineering', 'AI Research', 'Computer Vision', 'NLP', 'Data Engineering', 'Backend', 'Frontend', 'Full Stack', 'Quant', 'Product Management', 'Robotics', 'Security', 'Hardware', 'Research'];
 export const SKILL_SUGGESTIONS = allSkillNames();
@@ -490,6 +490,35 @@ function AutomationTab() {
   );
 }
 
+function MailTab() {
+  const s = settings.value!;
+  if (!features.value.mail) {
+    return (
+      <section class="card card-pad stack">
+        <h3 style={{ fontSize: 15 }}>Email scanning is not part of this deployment</h3>
+        <p class="small ink-2">
+          This is the public build, which never asks for Gmail access. To have InternIQ read your placement, admissions and exam emails (read-only), deploy your own copy with <code>private/config.json</code> set to <code>{'{ "mail": true }'}</code>. See docs/DEPLOY.md.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section class="card card-pad stack">
+      <Toggle checked={s.mail.enabled} onChange={(v) => void saveSettings({ mail: { enabled: v } })} label="Scan my inbox every hour" hint="Reads only new placement, application, admissions, exam and deadline emails. Never sends, deletes, labels or changes anything in Gmail." />
+      <Toggle checked={s.mail.autoTrack} onChange={(v) => void saveSettings({ mail: { autoTrack: v } })} label="Update applications from emails" hint="Application confirmations, assessments, interviews, offers and rejections move the matching internship along your pipeline (never backwards); new companies are added." />
+      <Field label="First scan looks back (days)" id="m-look">
+        <input id="m-look" class="input" type="number" min={1} max={180} style={{ maxWidth: 140 }} value={s.mail.lookbackDays} onChange={(e) => void saveSettings({ mail: { lookbackDays: Number((e.currentTarget as HTMLInputElement).value) } })} />
+      </Field>
+      <Field label="Always-important senders" id="m-snd" hint="Addresses or domains, e.g. a professor's email, admissions@university.edu, or a company domain.">
+        <ChipsInput id="m-snd" values={s.mail.extraSenders} onChange={(v) => void saveSettings({ mail: { extraSenders: v } })} placeholder="admissions@mbzuai.ac.ae, kaust.edu.sa" />
+      </Field>
+      <Callout kind="plain">
+        Built-in rules (from your Placement Tracker routine): GGSIPU placement cell and POD, Internshala, Naukri, LinkedIn application confirmations, applicant-tracking systems and coding-test platforms; plus universities, uni-assist, DAAD, IELTS/TOEFL, UPSC, SSC, NTA and IBPS. Job alerts, OTPs, newsletters and paid "training & internship programs" are ignored.
+      </Callout>
+    </section>
+  );
+}
+
 function DataTab() {
   const [busy, setBusy] = useState('');
   const [confirmText, setConfirmText] = useState('');
@@ -579,6 +608,7 @@ export function SettingsView() {
     { id: 'ai', label: aiReady.value ? 'AI' : 'AI (off)' },
     { id: 'sources', label: 'Sources' },
     { id: 'automation', label: 'Automation' },
+    { id: 'mail', label: 'Mail' },
     { id: 'data', label: 'Data & privacy' },
   ];
   return (
@@ -598,6 +628,7 @@ export function SettingsView() {
       ) : null}
       {tab === 'sources' ? <SourcesTab /> : null}
       {tab === 'automation' ? <AutomationTab /> : null}
+      {tab === 'mail' ? <MailTab /> : null}
       {tab === 'data' ? <DataTab /> : null}
       {tab !== 'profile' ? (
         <p class="tiny muted" style={{ marginTop: 12 }}>

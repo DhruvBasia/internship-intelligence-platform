@@ -17,7 +17,32 @@ const dist = join(root, 'dist');
 const dev = process.argv.includes('--dev');
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 
-export async function buildServer() {
+async function readJson(path) {
+  try {
+    return JSON.parse(await readFile(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Personal deployments read git-ignored files from private/:
+ *   config.json  { "mail": true } compiles in Gmail scanning and adds the read-only Gmail scope
+ *   seed.json    profile, roadmap tasks, programme stages (imported once on first open)
+ *   ratings.json personal fit ratings and notes for catalogue programmes
+ * Pass --public to ignore private/ (what CI and tests use).
+ */
+export async function loadBuildConfig({ usePrivate = !process.argv.includes('--public') } = {}) {
+  if (!usePrivate) return { features: { mail: false }, personal: null };
+  const config = (await readJson(join(root, 'private/config.json'))) ?? {};
+  const seed = await readJson(join(root, 'private/seed.json'));
+  const ratings = await readJson(join(root, 'private/ratings.json'));
+  const personal = seed || ratings ? { version: 1, ...(seed ?? {}), ratings: ratings ?? undefined } : null;
+  return { features: { mail: config.mail === true }, personal };
+}
+
+export async function buildServer(opts = {}) {
+  const cfg = opts.config ?? (await loadBuildConfig());
   const result = await build({
     entryPoints: [join(root, 'src/server/main.ts')],
     bundle: true,
@@ -29,6 +54,10 @@ export async function buildServer() {
     legalComments: 'none',
     write: false,
     logLevel: 'warning',
+    define: {
+      __IIP_FEATURES__: JSON.stringify(cfg.features),
+      __IIP_PERSONAL__: JSON.stringify(cfg.personal),
+    },
   });
   const code = result.outputFiles[0].text;
   // Evaluate the bundle once (with no Apps Script globals) to discover its exports.
@@ -73,13 +102,25 @@ export async function buildClient() {
   return { html, jsBytes: js.length, cssBytes: css.length };
 }
 
+/** The manifest, plus the read-only Gmail scope and Gmail advanced service when mail is compiled in. */
+export async function buildManifest(cfg) {
+  const manifest = JSON.parse(await readFile(join(root, 'appsscript.json'), 'utf8'));
+  if (cfg.features.mail) {
+    manifest.oauthScopes = Array.from(new Set([...manifest.oauthScopes, 'https://www.googleapis.com/auth/gmail.readonly']));
+    manifest.dependencies = { enabledAdvancedServices: [{ userSymbol: 'Gmail', serviceId: 'gmail', version: 'v1' }] };
+  }
+  return JSON.stringify(manifest, null, 2) + '\n';
+}
+
 async function main() {
   await mkdir(dist, { recursive: true });
-  const [server, client] = await Promise.all([buildServer(), buildClient()]);
+  const cfg = await loadBuildConfig();
+  const [server, client] = await Promise.all([buildServer({ config: cfg }), buildClient()]);
   await writeFile(join(dist, 'Code.js'), server.code);
   await writeFile(join(dist, 'index.html'), client.html);
-  await copyFile(join(root, 'appsscript.json'), join(dist, 'appsscript.json'));
+  await writeFile(join(dist, 'appsscript.json'), await buildManifest(cfg));
   const kb = (n) => (n / 1024).toFixed(1) + ' KB';
+  console.log(`build   ${cfg.personal ? 'personal (private/ seed included)' : 'public'} · mail ${cfg.features.mail ? 'on' : 'off'}`);
   console.log(`server  ${kb(server.code.length)}  (${server.names.length} functions)`);
   console.log(`client  js ${kb(client.jsBytes)}  css ${kb(client.cssBytes)}  html ${kb(client.html.length)}`);
 }

@@ -173,6 +173,16 @@ export interface Settings {
     digest: boolean;
     digestThreshold: number;
   };
+  mail: {
+    /** Scan Gmail automatically every hour (needs the mail feature in this deployment). */
+    enabled: boolean;
+    /** Create/update internship applications from placement emails. */
+    autoTrack: boolean;
+    /** How far back the first scan looks. */
+    lookbackDays: number;
+    /** Extra senders (addresses or domains) that always count as important. */
+    extraSenders: string[];
+  };
   onboarded: boolean;
 }
 
@@ -230,6 +240,12 @@ export interface BootstrapData {
   sheetUrl: string;
   lastRefresh: RefreshReport | null;
   migratedFromV1: number;
+  features: Features;
+  programs: Program[];
+  exams: Exam[];
+  tasks: Task[];
+  mail: MailItem[];
+  lastMailScan: MailReport | null;
 }
 
 export interface JobInput {
@@ -306,7 +322,27 @@ export interface Api {
   resolveBoard(input: string): { board: Board; openRoles: number; internRoles: number };
   getActivity(limit: number): { activity: ActivityEntry[] };
   deleteAllData(confirm: string): { sheetUrl: string };
+
+  updateProgram(id: string, patch: ProgramPatch): { program: Program };
+  createProgram(input: ProgramPatch & { name: string }): { program: Program };
+  deleteProgram(id: string): { deleted: string };
+  updateExam(id: string, patch: ExamPatch): { exam: Exam };
+  createExam(input: ExamPatch & { name: string }): { exam: Exam };
+  deleteExam(id: string): { deleted: string };
+  refreshCatalogs(): { programs: Program[]; exams: Exam[]; added: number };
+  createTask(input: TaskInput): { task: Task };
+  updateTask(id: string, patch: TaskPatch): { task: Task };
+  deleteTask(id: string): { deleted: string };
+  scanMail(): { report: MailReport; mail: MailItem[]; jobs: JobSummary[]; tasks: Task[] };
+  mailAction(id: string, action: MailAction): { mail: MailItem; task: Task | null; job: JobSummary | null };
 }
+
+export type MailAction = 'done' | 'ignore' | 'restore' | 'task' | 'apply-stage';
+
+export type ProgramPatch = Partial<
+  Pick<Program, 'stage' | 'starred' | 'myNotes' | 'fit' | 'docs' | 'deadline' | 'deadlineText' | 'name' | 'org' | 'url' | 'region' | 'funding' | 'money' | 'requirements'>
+>;
+export type ExamPatch = Partial<Pick<Exam, 'stage' | 'starred' | 'myNotes' | 'applicationNo' | 'name' | 'body' | 'category' | 'url' | 'events' | 'eligibility'>>;
 
 export type ApiMethod = keyof Api;
 
@@ -324,6 +360,170 @@ export type ErrorCode =
   | 'FETCH_FAILED'
   | 'BUSY'
   | 'INTERNAL';
+
+// ---------------------------------------------------------------------------
+// Further studies, government exams, tasks and mail
+
+/** Which part of life a date belongs to; drives calendar colour and filters. */
+export type Area = 'internships' | 'studies' | 'exams' | 'general';
+
+export const PROGRAM_STAGES = ['shortlisted', 'preparing', 'applied', 'interview', 'admitted', 'rejected', 'dropped'] as const;
+export type ProgramStage = (typeof PROGRAM_STAGES)[number];
+export const PROGRAM_STAGE_LABELS: Record<ProgramStage, string> = {
+  shortlisted: 'Shortlisted',
+  preparing: 'Preparing',
+  applied: 'Applied',
+  interview: 'Interview',
+  admitted: 'Admitted',
+  rejected: 'Rejected',
+  dropped: 'Dropped',
+};
+export type Funding = 'full' | 'free' | 'part' | 'fee' | 'none';
+export type Fit = 'top' | 'ok' | 'reach' | 'skip' | '';
+
+export const DOC_KEYS = ['cv', 'sop', 'lor', 'transcripts', 'english', 'video', 'portfolio'] as const;
+export type DocKey = (typeof DOC_KEYS)[number];
+export const DOC_LABELS: Record<DocKey, string> = {
+  cv: 'CV',
+  sop: 'Statement of purpose',
+  lor: 'Recommendation letters',
+  transcripts: 'Transcripts',
+  english: 'IELTS / TOEFL',
+  video: 'Video',
+  portfolio: 'Portfolio',
+};
+export type DocStatus = 'todo' | 'doing' | 'done' | 'na';
+
+export interface Program {
+  id: string;
+  key: string;
+  region: string;
+  name: string;
+  org: string;
+  url: string;
+  deadline: string;
+  deadlineText: string;
+  confirmed: boolean;
+  funding: Funding;
+  money: string;
+  requirements: string;
+  fit: Fit;
+  note: string;
+  stage: ProgramStage;
+  starred: boolean;
+  docs: Partial<Record<DocKey, DocStatus>>;
+  myNotes: string;
+  source: 'catalog' | 'manual';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const EXAM_STAGES = ['watching', 'preparing', 'applied', 'admit-card', 'appeared', 'qualified', 'dropped'] as const;
+export type ExamStage = (typeof EXAM_STAGES)[number];
+export const EXAM_STAGE_LABELS: Record<ExamStage, string> = {
+  watching: 'Watching',
+  preparing: 'Preparing',
+  applied: 'Applied',
+  'admit-card': 'Admit card',
+  appeared: 'Appeared',
+  qualified: 'Qualified',
+  dropped: 'Not pursuing',
+};
+
+export interface ExamEvent {
+  label: string;
+  /** YYYY-MM-DD; with precision 'month' the day is a placeholder (1st). */
+  date: string;
+  precision: 'day' | 'month';
+}
+
+export type ExamEligibility = 'eligible' | 'final-year-ok' | 'check' | 'not-eligible';
+
+export interface Exam {
+  id: string;
+  key: string;
+  name: string;
+  body: string;
+  category: string;
+  field: 'core' | 'general';
+  eligibility: string;
+  forYou: ExamEligibility;
+  forYouNote: string;
+  age: string;
+  url: string;
+  confidence: 'official' | 'expected' | 'watch';
+  events: ExamEvent[];
+  notes: string;
+  stage: ExamStage;
+  starred: boolean;
+  myNotes: string;
+  applicationNo: string;
+  source: 'catalog' | 'manual';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Task {
+  id: string;
+  title: string;
+  /** YYYY-MM-DD, or YYYY-MM-DDTHH:mm (local time) when allDay is false; '' for undated. */
+  due: string;
+  allDay: boolean;
+  area: Area;
+  status: 'todo' | 'done';
+  source: 'manual' | 'mail' | 'roadmap';
+  link: string;
+  notes: string;
+  refType: '' | 'job' | 'program' | 'exam';
+  refId: string;
+  mailId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type TaskInput = Partial<Pick<Task, 'title' | 'due' | 'allDay' | 'area' | 'link' | 'notes' | 'refType' | 'refId'>>;
+export type TaskPatch = Partial<Pick<Task, 'title' | 'due' | 'allDay' | 'area' | 'status' | 'link' | 'notes'>>;
+
+export const MAIL_CATEGORIES = ['eligible', 'applied', 'assessment', 'interview', 'offer', 'rejected', 'on-hold', 'admissions', 'exam', 'deadline', 'other'] as const;
+export type MailCategory = (typeof MAIL_CATEGORIES)[number];
+
+export interface MailItem {
+  id: string;
+  threadId: string;
+  from: string;
+  fromName: string;
+  subject: string;
+  snippet: string;
+  date: string;
+  category: MailCategory;
+  area: Area;
+  company: string;
+  role: string;
+  due: string;
+  allDay: boolean;
+  suggestedStage: Stage | '';
+  jobId: string;
+  taskId: string;
+  status: 'new' | 'done' | 'ignored';
+  url: string;
+  createdAt: string;
+}
+
+export interface MailReport {
+  at: string;
+  scanned: number;
+  added: number;
+  important: number;
+  jobsCreated: number;
+  jobsUpdated: number;
+  tasksCreated: number;
+  error: string;
+}
+
+export interface Features {
+  /** Gmail scanning is compiled in only for deployments that request the read-only Gmail scope. */
+  mail: boolean;
+}
 
 export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends (infer U)[] ? U[] : T[K] extends object ? DeepPartial<T[K]> : T[K];

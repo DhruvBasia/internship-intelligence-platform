@@ -1,9 +1,10 @@
 import { useMemo } from 'preact/hooks';
-import { ArrowRight, CalendarClock, CircleCheck, CircleX, Compass, History, RefreshCw, Sparkles, TriangleAlert } from 'lucide-preact';
-import type { ActivityEntry, JobSummary } from '../../shared/types';
-import { daysUntil, dueLabel, greeting, plural, relTime } from '../lib/format';
-import { activity, aiReady, counts, jobs, lastRefresh, migratedFromV1, navigate, openJobId, profile, refreshNow, refreshing, setFilters, usage } from '../state';
+import { ArrowRight, CircleCheck, CircleX, Compass, History, RefreshCw, Sparkles, TriangleAlert } from 'lucide-preact';
+import type { ActivityEntry } from '../../shared/types';
+import { dueLabel, greeting, plural, relTime, todayDay } from '../lib/format';
+import { activity, aiReady, counts, exams, features, jobs, lastMailScan, lastRefresh, mail, migratedFromV1, navigate, profile, programs, refreshNow, refreshing, setFilters, usage } from '../state';
 import { Button, Callout, Empty } from '../ui';
+import { AreaDot, EventRow, useEvents } from './Calendar';
 import { JobRow } from './common';
 
 function Tile({ label, value, foot, onClick }: { label: string; value: number | string; foot?: string; onClick?: () => void }) {
@@ -17,21 +18,6 @@ function Tile({ label, value, foot, onClick }: { label: string; value: number | 
   );
 }
 
-function upcoming(list: JobSummary[]) {
-  const items: { job: JobSummary; day: string; kind: 'deadline' | 'follow-up' }[] = [];
-  for (const j of list) {
-    if (j.stage === 'archived' || j.stage === 'rejected') continue;
-    if (j.deadline && (j.stage === 'discovered' || j.stage === 'saved')) {
-      const n = daysUntil(j.deadline);
-      if (n >= -2 && n <= 21) items.push({ job: j, day: j.deadline, kind: 'deadline' });
-    }
-    if (j.followUpAt) {
-      const n = daysUntil(j.followUpAt);
-      if (n <= 14) items.push({ job: j, day: j.followUpAt, kind: 'follow-up' });
-    }
-  }
-  return items.sort((a, b) => a.day.localeCompare(b.day)).slice(0, 8);
-}
 
 function ActivityIcon({ type }: { type: ActivityEntry['type'] }) {
   if (type === 'ai') return <Sparkles size={14} />;
@@ -46,7 +32,20 @@ export function Home() {
   const p = profile.value;
   const all = jobs.value;
   const top = useMemo(() => all.filter((j) => j.stage === 'discovered').sort((a, b) => b.score - a.score).slice(0, 6), [all]);
-  const soon = useMemo(() => upcoming(all), [all]);
+  const events = useEvents();
+  const today = todayDay();
+  const horizon = new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10);
+  const agenda = events.filter((e) => !e.done && ((e.refType === 'task' && e.date < today) || (e.date >= today && e.date <= horizon))).slice(0, 8);
+  const inbox = mail.value.filter((m) => m.status === 'new');
+  const nextProgram = programs.value
+    .filter((p) => p.deadline && p.deadline >= today && p.fit !== 'skip' && !['dropped', 'rejected', 'applied', 'admitted'].includes(p.stage))
+    .sort((a, b) => a.deadline.localeCompare(b.deadline))[0];
+  const studyLine = nextProgram ? `next deadline ${dueLabel(nextProgram.deadline)}: ${nextProgram.name}` : `${programs.value.length} programmes tracked`;
+  const nextExam = exams.value
+    .filter((x) => x.stage !== 'dropped')
+    .flatMap((x) => x.events.filter((e) => e.precision === 'day' && e.date >= today).map((e) => ({ x, e })))
+    .sort((a, b) => a.e.date.localeCompare(b.e.date))[0];
+  const examLine = nextExam ? `${nextExam.x.name.replace(/\s*\(.*\)$/, '')}: ${nextExam.e.label.toLowerCase()} ${dueLabel(nextExam.e.date)}` : `${exams.value.length} exams tracked`;
   const last = lastRefresh.value;
   const failed = last?.sources.filter((s) => s.error) ?? [];
   const u = usage.value;
@@ -119,26 +118,69 @@ export function Home() {
           <section class="card">
             <div class="card-head">
               <h2>Coming up</h2>
-              <span class="sub">deadlines and follow-ups</span>
+              <span class="sub">next 14 days, all areas</span>
+              <Button class="grow" variant="ghost" size="sm" onClick={() => navigate('calendar')}>
+                Calendar <ArrowRight size={14} />
+              </Button>
             </div>
-            <div class="card-pad" style={{ paddingTop: 8, paddingBottom: 8 }}>
-              {soon.length ? (
-                <div class="timeline">
-                  {soon.map(({ job, day, kind }) => (
-                    <button class="tl-item" style={{ border: 0, background: 'none', textAlign: 'left', cursor: 'pointer', width: '100%' }} onClick={() => (openJobId.value = job.id)}>
-                      <CalendarClock size={14} />
-                      <span class="ellipsis">
-                        <strong style={{ fontWeight: 600 }}>{kind === 'deadline' ? 'Apply' : 'Follow up'}</strong> · {job.role} at {job.company}
-                      </span>
-                      <span class={`small ${daysUntil(day) <= 1 ? 'neg' : 'muted'}`}>{dueLabel(day)}</span>
-                    </button>
-                  ))}
-                </div>
+            <div class="card-pad" style={{ paddingTop: 4, paddingBottom: 4 }}>
+              {agenda.length ? (
+                agenda.map((e) => <EventRow e={e} showDate />)
               ) : (
                 <p class="muted small" style={{ padding: '10px 0' }}>
-                  Nothing due in the next two weeks. Add deadlines and follow-up dates from a job's details.
+                  Nothing due in the next two weeks.
                 </p>
               )}
+            </div>
+          </section>
+
+          {features.value.mail ? (
+            <section class="card">
+              <div class="card-head">
+                <h2>Inbox</h2>
+                <span class="sub">{inbox.length ? `${inbox.length} need attention` : 'all caught up'}</span>
+                <Button class="grow" variant="ghost" size="sm" onClick={() => navigate('mail')}>
+                  Mail <ArrowRight size={14} />
+                </Button>
+              </div>
+              <div class="card-pad" style={{ paddingTop: 4, paddingBottom: 4 }}>
+                {inbox.slice(0, 4).map((m) => (
+                  <button class="tl-item" style={{ border: 0, background: 'none', textAlign: 'left', cursor: 'pointer', width: '100%' }} onClick={() => navigate('mail')}>
+                    <AreaDot area={m.area} />
+                    <span class="ellipsis small">
+                      <strong style={{ fontWeight: 600 }}>{m.company || m.fromName}</strong> · {m.subject}
+                    </span>
+                    <span class="tiny muted">{relTime(m.date)}</span>
+                  </button>
+                ))}
+                {!inbox.length ? (
+                  <p class="muted small" style={{ padding: '10px 0' }}>
+                    {lastMailScan.value ? `Last scan ${relTime(lastMailScan.value.at)}.` : 'Run the first scan from the Mail page.'}
+                  </p>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
+
+          <section class="card">
+            <div class="card-head">
+              <h2>Beyond internships</h2>
+            </div>
+            <div class="card-pad stack" style={{ gap: 10 }}>
+              <button class="tl-item" style={{ border: 0, background: 'none', textAlign: 'left', cursor: 'pointer', width: '100%' }} onClick={() => navigate('studies')}>
+                <AreaDot area="studies" />
+                <span class="small">
+                  <strong style={{ fontWeight: 600 }}>Further studies</strong> · {studyLine}
+                </span>
+                <ArrowRight size={14} />
+              </button>
+              <button class="tl-item" style={{ border: 0, background: 'none', textAlign: 'left', cursor: 'pointer', width: '100%' }} onClick={() => navigate('exams')}>
+                <AreaDot area="exams" />
+                <span class="small">
+                  <strong style={{ fontWeight: 600 }}>Govt exams</strong> · {examLine}
+                </span>
+                <ArrowRight size={14} />
+              </button>
             </div>
           </section>
 

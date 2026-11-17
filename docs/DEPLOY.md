@@ -28,6 +28,18 @@ This writes `.clasp.json` (git-ignored) with your script id.
 2. `cp .clasp.json.example .clasp.json` and paste the id.
 3. Deploy as below. On first open, each user's v1 "Internships" sheet is converted, their Gemini key and profile carry over, the old sheets are renamed `v1 backup · …`, and the old daily trigger retires itself.
 
+## Personal build: Gmail scanning and your own data
+
+For your own deployment, create a git-ignored `private/` folder:
+
+| File | Effect |
+|---|---|
+| `private/config.json` | `{ "mail": true }` compiles in the Mail section and adds the read-only scope `gmail.readonly` plus the Gmail advanced service to the manifest |
+| `private/seed.json` | Your profile, dated roadmap tasks and programme stages, imported once on first open |
+| `private/ratings.json` | Your fit rating and note per catalogue programme |
+
+`npm run build` prints `build personal · mail on` when these are picked up. CI and anyone cloning the repo get the public build (no Gmail, no personal data). Open the deployed app with the Google account whose inbox you want scanned.
+
 ## 3. Push and deploy
 
 ```bash

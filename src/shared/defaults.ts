@@ -65,6 +65,12 @@ export const DEFAULT_SETTINGS: Settings = {
     digest: true,
     digestThreshold: 75,
   },
+  mail: {
+    enabled: true,
+    autoTrack: true,
+    lookbackDays: 45,
+    extraSenders: [],
+  },
   onboarded: false,
 };
 
@@ -140,6 +146,7 @@ export function mergeSettings(base: Settings, patch: DeepPartial<Settings> | nul
   const src = p.sources ?? {};
   const f = p.filters ?? {};
   const auto = p.automation ?? {};
+  const mail = p.mail ?? {};
   const provider: AiProvider = ['gemini', 'openai_compat', 'none'].includes(String(ai.provider))
     ? (ai.provider as AiProvider)
     : base.ai.provider;
@@ -179,6 +186,15 @@ export function mergeSettings(base: Settings, patch: DeepPartial<Settings> | nul
       timezone: validTimezone(auto.timezone, base.automation.timezone),
       digest: bool(auto.digest, base.automation.digest),
       digestThreshold: num(auto.digestThreshold, base.automation.digestThreshold, 0, 100),
+    },
+    mail: {
+      enabled: bool(mail.enabled, base.mail.enabled),
+      autoTrack: bool(mail.autoTrack, base.mail.autoTrack),
+      lookbackDays: num(mail.lookbackDays, base.mail.lookbackDays, 1, 180),
+      extraSenders:
+        mail.extraSenders === undefined
+          ? base.mail.extraSenders
+          : splitList(mail.extraSenders, 30).filter((s) => /^[a-z0-9._%+@-]+\.[a-z]{2,}$/i.test(s)).map((s) => s.toLowerCase()),
     },
     onboarded: bool(p.onboarded, base.onboarded),
   };

@@ -71,6 +71,18 @@ export const importFromSheet = rpc('importFromSheet', api.importFromSheet, { per
 export const resolveBoard = rpc('resolveBoard', api.resolveBoard, { perMinute: 15 });
 export const getActivity = rpc('getActivity', api.getActivity);
 export const deleteAllData = rpc('deleteAllData', api.deleteAllData, { perMinute: 2 });
+export const updateProgram = rpc('updateProgram', api.updateProgram, { perMinute: 120 });
+export const createProgram = rpc('createProgram', api.createProgram, { perMinute: 30 });
+export const deleteProgram = rpc('deleteProgram', api.deleteProgram, { perMinute: 30 });
+export const updateExam = rpc('updateExam', api.updateExam, { perMinute: 120 });
+export const createExam = rpc('createExam', api.createExam, { perMinute: 30 });
+export const deleteExam = rpc('deleteExam', api.deleteExam, { perMinute: 30 });
+export const refreshCatalogs = rpc('refreshCatalogs', api.refreshCatalogs, { perMinute: 4 });
+export const createTask = rpc('createTask', api.createTask, { perMinute: 60 });
+export const updateTask = rpc('updateTask', api.updateTask, { perMinute: 120 });
+export const deleteTask = rpc('deleteTask', api.deleteTask, { perMinute: 60 });
+export const scanMail = rpc('scanMail', api.scanMail, { perMinute: 4 });
+export const mailAction = rpc('mailAction', api.mailAction, { perMinute: 120 });
 
 /** Hourly time-driven trigger (installed per user when automation is on). */
 export const worker = job(WORKER, runWorker);

@@ -1,6 +1,18 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { ChartColumn, ChevronDown, Compass, FileSpreadsheet, House, Link, Monitor, Moon, PenLine, Plus, RefreshCw, Search, Settings as Cog, SquareKanban, Sun } from 'lucide-preact';
-import { addOpen, aiReady, applyTheme, bootError, counts, email, filters, lastRefresh, loaded, navigate, openJobId, refreshNow, refreshing, setFilters, settings, theme, usage, view, type View } from './state';
+import { computed } from '@preact/signals';
+import { CalendarDays, ChartColumn, ChevronDown, Compass, FileSpreadsheet, GraduationCap, House, Landmark, Link, Mail, Monitor, Moon, PenLine, Plus, RefreshCw, Search, Settings as Cog, SquareKanban, Sun } from 'lucide-preact';
+import { addOpen, aiReady, applyTheme, bootError, counts, email, filters, lastRefresh, loaded, mail, navigate, openJobId, refreshNow, refreshing, setFilters, settings, tasks, theme, usage, view, type View } from './state';
+import { todayDay } from './lib/format';
+import { Calendar } from './views/Calendar';
+import { MailView } from './views/Mail';
+import { Studies } from './views/Studies';
+import { Exams } from './views/Exams';
+
+const newMail = computed(() => mail.value.filter((m) => m.status === 'new').length);
+const dueToday = computed(() => {
+  const t = todayDay();
+  return tasks.value.filter((x) => x.status === 'todo' && x.due && x.due.slice(0, 10) <= t).length;
+});
 import { relTime } from './lib/format';
 import { Button, Meter, Toasts } from './ui';
 import { Home } from './views/Home';
@@ -12,19 +24,28 @@ import { Onboarding } from './views/Onboarding';
 import { JobDrawer } from './views/JobDrawer';
 import { AddJobModal } from './views/AddJob';
 
-const NAV: { id: View; label: string; Icon: typeof House }[] = [
-  { id: 'home', label: 'Home', Icon: House },
-  { id: 'discover', label: 'Discover', Icon: Compass },
-  { id: 'pipeline', label: 'Pipeline', Icon: SquareKanban },
-  { id: 'insights', label: 'Insights', Icon: ChartColumn },
-  { id: 'settings', label: 'Settings', Icon: Cog },
+const NAV: { id: View; label: string; Icon: typeof House; group: string }[] = [
+  { id: 'home', label: 'Home', Icon: House, group: 'Overview' },
+  { id: 'calendar', label: 'Calendar', Icon: CalendarDays, group: 'Overview' },
+  { id: 'mail', label: 'Mail', Icon: Mail, group: 'Overview' },
+  { id: 'discover', label: 'Discover', Icon: Compass, group: 'Internships' },
+  { id: 'pipeline', label: 'Pipeline', Icon: SquareKanban, group: 'Internships' },
+  { id: 'insights', label: 'Insights', Icon: ChartColumn, group: 'Internships' },
+  { id: 'studies', label: 'Further studies', Icon: GraduationCap, group: 'Beyond' },
+  { id: 'exams', label: 'Govt exams', Icon: Landmark, group: 'Beyond' },
+  { id: 'settings', label: 'Settings', Icon: Cog, group: '' },
 ];
+const MOBILE: View[] = ['home', 'calendar', 'discover', 'studies', 'exams', 'mail', 'pipeline', 'settings'];
 
 const TITLES: Record<View, string> = {
   home: 'Home',
-  discover: 'Discover',
-  pipeline: 'Pipeline',
-  insights: 'Insights',
+  calendar: 'Calendar',
+  mail: 'Mail',
+  discover: 'Internships · Discover',
+  pipeline: 'Internships · Pipeline',
+  insights: 'Internships · Insights',
+  studies: 'Further studies',
+  exams: 'Government exams',
   settings: 'Settings',
 };
 
@@ -91,13 +112,19 @@ function Sidebar() {
           <div class="brand-sub">Internship intelligence</div>
         </div>
       </div>
-      {NAV.map(({ id, label, Icon }) => (
-        <button class="nav-item" aria-current={view.value === id ? 'page' : undefined} onClick={() => navigate(id)}>
-          <Icon size={17} />
-          {label}
-          {id === 'discover' && c.by.discovered ? <span class="count">{c.by.discovered}</span> : null}
-          {id === 'pipeline' && c.active ? <span class="count">{c.active}</span> : null}
-        </button>
+      {NAV.map(({ id, label, Icon, group }, i) => (
+        <>
+          {group && group !== NAV[i - 1]?.group ? <div class="nav-group">{group}</div> : null}
+          {!group ? <div class="nav-group" /> : null}
+          <button class="nav-item" aria-current={view.value === id ? 'page' : undefined} onClick={() => navigate(id)}>
+            <Icon size={17} />
+            {label}
+            {id === 'discover' && c.by.discovered ? <span class="count">{c.by.discovered}</span> : null}
+            {id === 'pipeline' && c.active ? <span class="count">{c.active}</span> : null}
+            {id === 'mail' && newMail.value ? <span class="count pill">{newMail.value}</span> : null}
+            {id === 'calendar' && dueToday.value ? <span class="count pill">{dueToday.value}</span> : null}
+          </button>
+        </>
       ))}
       <div class="sidebar-foot">
         {s && aiReady.value && u ? (
@@ -130,12 +157,15 @@ function Sidebar() {
 function MobileNav() {
   return (
     <nav class="mobile-nav" aria-label="Main">
-      {NAV.map(({ id, label, Icon }) => (
-        <button aria-current={view.value === id ? 'page' : undefined} onClick={() => navigate(id)}>
-          <Icon size={20} />
-          {label}
-        </button>
-      ))}
+      {MOBILE.map((id) => {
+        const { label, Icon } = NAV.find((n) => n.id === id)!;
+        return (
+          <button aria-current={view.value === id ? 'page' : undefined} onClick={() => navigate(id)}>
+            <Icon size={20} />
+            {label.replace('Further studies', 'Studies')}
+          </button>
+        );
+      })}
     </nav>
   );
 }
@@ -220,7 +250,25 @@ export function App() {
       <div class="main">
         <Topbar />
         <main class="content" id="main">
-          {v === 'home' ? <Home /> : v === 'discover' ? <Discover /> : v === 'pipeline' ? <Pipeline /> : v === 'insights' ? <Insights /> : <SettingsView />}
+          {v === 'home' ? (
+            <Home />
+          ) : v === 'calendar' ? (
+            <Calendar />
+          ) : v === 'mail' ? (
+            <MailView />
+          ) : v === 'discover' ? (
+            <Discover />
+          ) : v === 'pipeline' ? (
+            <Pipeline />
+          ) : v === 'insights' ? (
+            <Insights />
+          ) : v === 'studies' ? (
+            <Studies />
+          ) : v === 'exams' ? (
+            <Exams />
+          ) : (
+            <SettingsView />
+          )}
         </main>
       </div>
       <MobileNav />

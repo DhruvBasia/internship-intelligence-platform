@@ -40,6 +40,7 @@ import {
   insertRawJobs,
   jobsTable,
   logActivity,
+  newId,
   rescoreAllLocally,
   snippetOf,
   textTable,
@@ -47,6 +48,25 @@ import {
   type RawJob,
 } from './store/jobs';
 import * as user from './store/userState';
+import { FEATURES } from './flags';
+import { getLastMailScan, scanMail as scanMailNow, shouldAdvance } from './mail/sync';
+import { applyPersonalSeedOnce, examsTable, mailTable, newTask, programsTable, syncCatalogs, tasksTable } from './store/records';
+import {
+  DOC_KEYS,
+  EXAM_STAGES,
+  PROGRAM_STAGES,
+  type Area,
+  type DocStatus,
+  type Exam,
+  type ExamEvent,
+  type ExamPatch,
+  type MailAction,
+  type MailItem,
+  type Program,
+  type ProgramPatch,
+  type TaskInput,
+  type TaskPatch,
+} from '../shared/types';
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -121,8 +141,19 @@ const summaries = (): JobSummary[] => jobsTable().all().map(toSummary);
 export function bootstrap(): BootstrapData {
   let migrated = user.getV1Migrated();
   if (!migrated && hasV1Data()) migrated = withUserLock(() => migrateV1InPlace());
+  withUserLock(() => {
+    syncCatalogs();
+    applyPersonalSeedOnce();
+  });
+  dropTableCache();
   const settings = user.getSettings();
   return {
+    features: FEATURES,
+    programs: programsTable().all(),
+    exams: examsTable().all(),
+    tasks: tasksTable().all(),
+    mail: recentMail(),
+    lastMailScan: getLastMailScan(),
     version: APP_VERSION,
     user: { email: currentUserEmail() },
     profile: user.getProfile(),
@@ -157,7 +188,7 @@ export function saveProfile(input: unknown): { profile: Profile; jobs: JobSummar
 export function saveSettings(patch: unknown): { settings: ReturnType<typeof user.settingsView> } {
   const before = user.getSettings();
   const next = user.saveSettings(plainObject(patch, 'Settings') as DeepPartial<Settings>);
-  if (JSON.stringify(before.automation) !== JSON.stringify(next.automation)) syncTriggers(next);
+  if (JSON.stringify([before.automation, before.mail.enabled]) !== JSON.stringify([next.automation, next.mail.enabled])) syncTriggers(next);
   return { settings: user.settingsView(next) };
 }
 
@@ -521,4 +552,374 @@ export function deleteAllData(confirmArg: unknown) {
   forgetSpreadsheet();
   props.deleteAll();
   return { sheetUrl: url };
+}
+
+// ---------------------------------------------------------------------------
+// Further studies
+
+const AREAS: Area[] = ['internships', 'studies', 'exams', 'general'];
+
+function recordId(v: unknown, prefix: string): string {
+  const s = text(v, 'Id', 40, true);
+  if (!new RegExp(`^${prefix}_[a-z0-9]{6,20}$`, 'i').test(s)) throw badInput('Invalid id.');
+  return s;
+}
+
+function dayOrDateTime(v: unknown, field: string): string {
+  const s = text(v, field, 40);
+  if (!s) return '';
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)) return s;
+  return dateOrEmpty(s, field);
+}
+
+function applyProgramPatch(p: Program, patch: ProgramPatch): Program {
+  const next: Program = { ...p, updatedAt: new Date().toISOString() };
+  if (patch.stage !== undefined) {
+    if (!(PROGRAM_STAGES as readonly string[]).includes(String(patch.stage))) throw badInput('Unknown stage.');
+    next.stage = patch.stage;
+  }
+  if (patch.starred !== undefined) next.starred = patch.starred === true;
+  if (patch.myNotes !== undefined) next.myNotes = text(patch.myNotes, 'Notes', LIMITS.notesChars);
+  if (patch.fit !== undefined) {
+    if (!['top', 'ok', 'reach', 'skip', ''].includes(String(patch.fit))) throw badInput('Unknown fit.');
+    next.fit = patch.fit;
+  }
+  if (patch.docs !== undefined) {
+    const docs = plainObject(patch.docs, 'Documents');
+    const clean: Program['docs'] = {};
+    for (const [k, v] of Object.entries(docs)) {
+      if ((DOC_KEYS as readonly string[]).includes(k) && ['todo', 'doing', 'done', 'na'].includes(String(v))) clean[k as keyof Program['docs']] = v as DocStatus;
+    }
+    next.docs = clean;
+  }
+  if (patch.deadline !== undefined) next.deadline = dateOrEmpty(patch.deadline, 'Deadline');
+  if (patch.deadlineText !== undefined) next.deadlineText = text(patch.deadlineText, 'Deadline note', 120);
+  if (patch.name !== undefined) next.name = text(patch.name, 'Programme', 200, true);
+  if (patch.org !== undefined) next.org = text(patch.org, 'University', 200);
+  if (patch.region !== undefined) next.region = text(patch.region, 'Region', 60);
+  if (patch.money !== undefined) next.money = text(patch.money, 'Funding details', 300);
+  if (patch.requirements !== undefined) next.requirements = text(patch.requirements, 'Requirements', 2000);
+  if (patch.funding !== undefined) {
+    if (!['full', 'free', 'part', 'fee', 'none'].includes(String(patch.funding))) throw badInput('Unknown funding type.');
+    next.funding = patch.funding;
+  }
+  if (patch.url !== undefined) {
+    const u = text(patch.url, 'URL', 2000);
+    if (u && !safeHttpUrl(u)) throw badInput('The link must start with http:// or https://');
+    next.url = safeHttpUrl(u);
+  }
+  return next;
+}
+
+export function updateProgram(idArg: unknown, patchArg: unknown) {
+  const id = recordId(idArg, 'p');
+  const patch = plainObject(patchArg, 'Changes') as ProgramPatch;
+  return withUserLock(() => {
+    const t = programsTable();
+    const p = t.get(id);
+    if (!p) throw notFound('That programme');
+    const next = applyProgramPatch(p, patch);
+    t.update([next]);
+    if (patch.stage && patch.stage !== p.stage) logActivity(id, 'stage', `${p.name} → ${patch.stage}`);
+    return { program: next };
+  });
+}
+
+export function createProgram(inputArg: unknown) {
+  const input = plainObject(inputArg, 'Programme') as ProgramPatch;
+  const now = new Date().toISOString();
+  const base: Program = {
+    id: newId('p_'),
+    key: '',
+    region: 'Other',
+    name: '',
+    org: '',
+    url: '',
+    deadline: '',
+    deadlineText: '',
+    confirmed: true,
+    funding: 'none',
+    money: '',
+    requirements: '',
+    fit: '',
+    note: '',
+    stage: 'shortlisted',
+    starred: false,
+    docs: {},
+    myNotes: '',
+    source: 'manual',
+    createdAt: now,
+    updatedAt: now,
+  };
+  const program = applyProgramPatch(base, { region: 'Other', ...input });
+  if (!program.name) throw badInput('Programme name is required.');
+  withUserLock(() => programsTable().insert([program]));
+  logActivity(program.id, 'created', `Added programme ${program.name}`);
+  return { program };
+}
+
+export function deleteProgram(idArg: unknown) {
+  const id = recordId(idArg, 'p');
+  withUserLock(() => programsTable().remove([id]));
+  return { deleted: id };
+}
+
+// ---------------------------------------------------------------------------
+// Government exams
+
+function cleanEvents(v: unknown): ExamEvent[] {
+  if (!Array.isArray(v)) throw badInput('Events must be a list.');
+  return v.slice(0, 12).map((e) => {
+    const o = plainObject(e, 'Event');
+    return {
+      label: text(o.label, 'Event label', 80, true),
+      date: dateOrEmpty(o.date, 'Event date'),
+      precision: o.precision === 'month' ? 'month' : 'day',
+    } as ExamEvent;
+  });
+}
+
+function applyExamPatch(x: Exam, patch: ExamPatch): Exam {
+  const next: Exam = { ...x, updatedAt: new Date().toISOString() };
+  if (patch.stage !== undefined) {
+    if (!(EXAM_STAGES as readonly string[]).includes(String(patch.stage))) throw badInput('Unknown stage.');
+    next.stage = patch.stage;
+  }
+  if (patch.starred !== undefined) next.starred = patch.starred === true;
+  if (patch.myNotes !== undefined) next.myNotes = text(patch.myNotes, 'Notes', LIMITS.notesChars);
+  if (patch.applicationNo !== undefined) next.applicationNo = text(patch.applicationNo, 'Application number', 80);
+  if (patch.name !== undefined) next.name = text(patch.name, 'Exam', 200, true);
+  if (patch.body !== undefined) next.body = text(patch.body, 'Conducting body', 120);
+  if (patch.category !== undefined) next.category = text(patch.category, 'Category', 60);
+  if (patch.eligibility !== undefined) next.eligibility = text(patch.eligibility, 'Eligibility', 1000);
+  if (patch.events !== undefined) next.events = cleanEvents(patch.events);
+  if (patch.url !== undefined) {
+    const u = text(patch.url, 'URL', 2000);
+    if (u && !safeHttpUrl(u)) throw badInput('The link must start with http:// or https://');
+    next.url = safeHttpUrl(u);
+  }
+  return next;
+}
+
+export function updateExam(idArg: unknown, patchArg: unknown) {
+  const id = recordId(idArg, 'x');
+  const patch = plainObject(patchArg, 'Changes') as ExamPatch;
+  return withUserLock(() => {
+    const t = examsTable();
+    const x = t.get(id);
+    if (!x) throw notFound('That exam');
+    // Catalogue exams keep their researched facts; user-added ones are fully editable.
+    if (x.source === 'catalog' && (patch.events !== undefined || patch.name !== undefined || patch.body !== undefined)) {
+      throw badInput('Catalogue exams update automatically; add your own dates as tasks instead.');
+    }
+    const next = applyExamPatch(x, patch);
+    t.update([next]);
+    if (patch.stage && patch.stage !== x.stage) logActivity(id, 'stage', `${x.name} → ${patch.stage}`);
+    return { exam: next };
+  });
+}
+
+export function createExam(inputArg: unknown) {
+  const input = plainObject(inputArg, 'Exam') as ExamPatch;
+  const now = new Date().toISOString();
+  const exam = applyExamPatch(
+    {
+      id: newId('x_'),
+      key: '',
+      name: '',
+      body: '',
+      category: 'Other',
+      field: 'general',
+      eligibility: '',
+      forYou: 'check',
+      forYouNote: '',
+      age: '',
+      url: '',
+      confidence: 'expected',
+      events: [],
+      notes: '',
+      stage: 'watching',
+      starred: false,
+      myNotes: '',
+      applicationNo: '',
+      source: 'manual',
+      createdAt: now,
+      updatedAt: now,
+    },
+    input,
+  );
+  if (!exam.name) throw badInput('Exam name is required.');
+  withUserLock(() => examsTable().insert([exam]));
+  return { exam };
+}
+
+export function deleteExam(idArg: unknown) {
+  const id = recordId(idArg, 'x');
+  withUserLock(() => examsTable().remove([id]));
+  return { deleted: id };
+}
+
+export function refreshCatalogs() {
+  const { added } = withUserLock(() => syncCatalogs(true));
+  dropTableCache();
+  return { programs: programsTable().all(), exams: examsTable().all(), added };
+}
+
+// ---------------------------------------------------------------------------
+// Tasks
+
+export function createTask(inputArg: unknown) {
+  const input = plainObject(inputArg, 'Task') as TaskInput;
+  const area = AREAS.includes(input.area as Area) ? (input.area as Area) : 'general';
+  const link = text(input.link, 'Link', 2000);
+  if (link && !safeHttpUrl(link)) throw badInput('The link must start with http:// or https://');
+  const refType = ['job', 'program', 'exam'].includes(String(input.refType)) ? (input.refType as 'job' | 'program' | 'exam') : '';
+  const due = dayOrDateTime(input.due, 'Due date');
+  const task = newTask({
+    title: text(input.title, 'Task', 200, true),
+    due,
+    allDay: !due.includes('T'),
+    area,
+    link,
+    notes: text(input.notes, 'Notes', 4000),
+    refType,
+    refId: refType ? text(input.refId, 'Reference', 40) : '',
+  });
+  withUserLock(() => tasksTable().insert([task]));
+  return { task };
+}
+
+export function updateTask(idArg: unknown, patchArg: unknown) {
+  const id = recordId(idArg, 't');
+  const patch = plainObject(patchArg, 'Changes') as TaskPatch;
+  return withUserLock(() => {
+    const t = tasksTable();
+    const task = t.get(id);
+    if (!task) throw notFound('That task');
+    const next = { ...task, updatedAt: new Date().toISOString() };
+    if (patch.title !== undefined) next.title = text(patch.title, 'Task', 200, true);
+    if (patch.due !== undefined) {
+      next.due = dayOrDateTime(patch.due, 'Due date');
+      next.allDay = !next.due.includes('T');
+    }
+    if (patch.area !== undefined && AREAS.includes(patch.area)) next.area = patch.area;
+    if (patch.status !== undefined) next.status = patch.status === 'done' ? 'done' : 'todo';
+    if (patch.notes !== undefined) next.notes = text(patch.notes, 'Notes', 4000);
+    if (patch.link !== undefined) {
+      const u = text(patch.link, 'Link', 2000);
+      if (u && !safeHttpUrl(u)) throw badInput('The link must start with http:// or https://');
+      next.link = safeHttpUrl(u);
+    }
+    t.update([next]);
+    return { task: next };
+  });
+}
+
+export function deleteTask(idArg: unknown) {
+  const id = recordId(idArg, 't');
+  withUserLock(() => tasksTable().remove([id]));
+  return { deleted: id };
+}
+
+// ---------------------------------------------------------------------------
+// Mail
+
+function recentMail(): MailItem[] {
+  return mailTable()
+    .all()
+    .slice()
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 300);
+}
+
+export function scanMail() {
+  const out = scanMailNow({ deadline: deadlineIn(240_000) });
+  dropTableCache();
+  return { report: out.report, mail: recentMail(), jobs: summaries(), tasks: tasksTable().all() };
+}
+
+export function mailAction(idArg: unknown, actionArg: unknown) {
+  const id = text(idArg, 'Email id', 64, true);
+  if (!/^[a-f0-9]{8,32}$/i.test(id)) throw badInput('Invalid email id.');
+  const action = String(actionArg) as MailAction;
+  if (!['done', 'ignore', 'restore', 'task', 'apply-stage'].includes(action)) throw badInput('Unknown action.');
+  return withUserLock(() => {
+    const mt = mailTable();
+    const mail = mt.get(id);
+    if (!mail) throw notFound('That email');
+    let next: MailItem = { ...mail };
+    let task = null;
+    let job: JobSummary | null = null;
+    if (action === 'done') next.status = 'done';
+    if (action === 'ignore') next.status = 'ignored';
+    if (action === 'restore') next.status = 'new';
+    if (action === 'task') {
+      const tt = tasksTable();
+      const existing = mail.taskId ? tt.get(mail.taskId) : undefined;
+      if (existing) task = existing;
+      else {
+        const fallback = new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 10);
+        task = newTask({
+          title: mail.company ? `Follow up: ${mail.company} – ${mail.subject}`.slice(0, 200) : mail.subject,
+          due: mail.due || fallback,
+          allDay: mail.due ? mail.allDay : true,
+          area: mail.area,
+          source: 'mail',
+          link: mail.url,
+          notes: `${mail.fromName}: ${mail.subject}`,
+          refType: mail.jobId ? 'job' : '',
+          refId: mail.jobId,
+          mailId: mail.id,
+        });
+        tt.insert([task]);
+        next = { ...next, taskId: task.id };
+      }
+      next.status = 'done';
+    }
+    if (action === 'apply-stage') {
+      if (!mail.suggestedStage) throw badInput('This email does not suggest an application stage.');
+      const jt = jobsTable();
+      const row = mail.jobId ? jt.get(mail.jobId) : undefined;
+      if (row) {
+        if (shouldAdvance(row.stage, mail.suggestedStage) || row.stage !== mail.suggestedStage) {
+          const now = new Date().toISOString();
+          const updated = { ...row, stage: mail.suggestedStage, stageChangedAt: now, updatedAt: now };
+          jt.update([updated]);
+          job = toSummary(updated);
+          logActivity(row.id, 'stage', `From email: ${row.role} at ${row.company} → ${mail.suggestedStage}`);
+        } else job = toSummary(row);
+      } else {
+        const created = insertRawJobs(
+          [
+            {
+              source: 'manual',
+              sourceLabel: 'From email',
+              sourceRef: mail.id,
+              url: '',
+              company: mail.company || mail.fromName,
+              role: mail.role || mail.subject,
+              location: '',
+              description: mail.snippet,
+              requirements: '',
+              postedAt: mail.date,
+              deadline: mail.due.slice(0, 10),
+              deadlineText: '',
+              tags: ['From email'],
+              stage: mail.suggestedStage,
+              notes: `Tracked from email: ${mail.subject}\n${mail.url}`,
+            },
+          ],
+          user.getProfile(),
+          { activity: 'created' },
+        );
+        if (created[0]) {
+          job = toSummary(created[0]);
+          next.jobId = created[0].id;
+        }
+      }
+      next.status = 'done';
+    }
+    mt.update([next]);
+    return { mail: next, task, job };
+  });
 }

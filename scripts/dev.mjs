@@ -12,9 +12,9 @@
 import http from 'node:http';
 import vm from 'node:vm';
 import { execFileSync } from 'node:child_process';
-import { buildClient, buildServer } from './build.mjs';
+import { buildClient, buildServer, loadBuildConfig } from './build.mjs';
 import { createGasGlobals } from '../tools/gas-fakes.mjs';
-import { fixtureFetch } from '../tools/fixtures.mjs';
+import { fixtureFetch, sampleInbox } from '../tools/fixtures.mjs';
 
 const arg = (name, fallback) => {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -44,12 +44,18 @@ const fetchImpl = (req) => {
   return liveFetch(req);
 };
 
-const { globals, state } = createGasGlobals({ fetchImpl, email: process.env.IIP_DEV_EMAIL || 'student@example.com' });
+// Gmail is always simulated locally (a synthetic inbox), even in --live mode.
+const inbox = sampleInbox();
+const { globals, state } = createGasGlobals({ fetchImpl, email: process.env.IIP_DEV_EMAIL || 'student@example.com', inbox: () => inbox });
 let ctx = null;
 let clientHtml = '';
 
+// Local runs always include mail; personal seed data is used when private/ exists.
+const buildConfig = await loadBuildConfig();
+buildConfig.features = { ...buildConfig.features, mail: true };
+
 async function rebuild() {
-  const [server, client] = await Promise.all([buildServer(), buildClient()]);
+  const [server, client] = await Promise.all([buildServer({ config: buildConfig }), buildClient()]);
   const context = vm.createContext({ ...globals, console });
   vm.runInContext(server.code, context, { filename: 'Code.js' });
   ctx = context;

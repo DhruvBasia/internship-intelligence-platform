@@ -28,3 +28,6 @@ coverage/
 
 # Logs
 *.log
+
+# Personal data and build flags for your own deployment (never committed)
+private/

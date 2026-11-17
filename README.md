@@ -35,6 +35,14 @@ v1 was a single-user Apps Script app. v2 is a rebuild for real use by many stude
 
 ## Features
 
+One app for the whole final year: **internships**, **further studies abroad**, **Indian government exams**, a **calendar** that merges every date, and an **inbox** that turns placement and admissions emails into tasks.
+
+- **Calendar.** Month grid and agenda across all four areas (internship deadlines and follow-ups, programme deadlines, exam milestones, tasks), colour-coded by area, with quick-add, overdue tasks, Google Calendar links and an `.ics` export for Apple/Google Calendar.
+- **Mail (personal build).** Hourly, read-only Gmail scan with the same rules as the "Placement Tracker" routine: college placement cell / POD, application confirmations, assessments, interviews, offers and rejections move your applications along the pipeline (never backwards); deadlines and interview times become calendar tasks; job alerts, OTPs and paid "training programs" are filtered out. Admissions and exam emails are routed to their sections.
+- **Further studies.** 123 researched master's programmes (Erasmus Mundus, UAE & Gulf, Germany) for autumn 2027 with deadlines, funding and requirements, a stage pipeline, per-programme document checklist (CV, SOP, LORs, transcripts, IELTS/TOEFL, video, portfolio) and an application roadmap of dated tasks. 20 funded research internships abroad are importable into the internship pipeline.
+- **Government exams.** 24 exams worth tracking for a final-year B.Tech (UPSC CSE/CDS/CAPF/ESE, AFCAT, Army TGC, Navy SSC IT, SSC CGL/CHSL/CPO, DSSSB, RBI, SEBI, IBPS, GATE 2028, UGC NET, ISRO, DRDO, NIELIT…) with eligibility for you, dated milestones marked official / expected / watch, and your own status and registration numbers.
+
+### Internships
 - **Discover.** Fresh internships from the community SimplifyJobs list (thousands of live postings) and the public job boards of companies you follow (Greenhouse, Lever, Ashby), plus optional Hacker News and We Work Remotely feeds. Season-aware, de-duplicated by canonical URL and by company+role, filtered to internships, newest first.
 - **Free match scores on every posting.** Skills (40%), role fit (25%), eligibility (20%) and location (15%), with plain-language strengths, gaps, tips and **eligibility flags**: PhD-only roles, senior titles, graduation windows, and "U.S. citizenship required" for students who need sponsorship. No key, no quota.
 - **AI analysis (optional, free).** Paste a free Gemini, Groq or OpenRouter key. Promising jobs are analysed automatically within a daily budget you set, five per request so free tiers go further. Title-only postings are enriched with the full description first.

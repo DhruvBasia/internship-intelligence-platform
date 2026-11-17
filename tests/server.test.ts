@@ -13,15 +13,20 @@ type Fetch = (req: { url: string; method: string; headers: Record<string, string
 
 let code = '';
 beforeAll(async () => {
-  code = (await buildServer()).code;
+  // Deterministic: mail compiled in, no private seed data.
+  code = (await buildServer({ config: { features: { mail: true }, personal: null } })).code;
 }, 60_000);
 
-function boot(opts: { fetchImpl?: Fetch; html?: string } = {}) {
-  const created = createGasGlobals({ fetchImpl: (opts.fetchImpl ?? fixtureFetch) as never, htmlFiles: { index: opts.html ?? '<script>window.__IIP_BOOT__ = "__IIP_BOOT__";</script>' } } as never);
+export function boot(opts: { fetchImpl?: Fetch; html?: string; inbox?: () => unknown[]; code?: string } = {}) {
+  const created = createGasGlobals({
+    fetchImpl: (opts.fetchImpl ?? fixtureFetch) as never,
+    htmlFiles: { index: opts.html ?? '<script>window.__IIP_BOOT__ = "__IIP_BOOT__";</script>' },
+    inbox: opts.inbox,
+  } as never);
   const globals = created.globals;
   const state = created.state as any;
   const ctx = vm.createContext({ ...globals, console: { log() {}, warn() {}, error() {} } });
-  vm.runInContext(code, ctx);
+  vm.runInContext(opts.code ?? code, ctx);
   const call = (name: string, ...args: unknown[]): Rpc => JSON.parse(JSON.stringify((ctx as any)[name](...args)));
   const ok = (name: string, ...args: unknown[]) => {
     const r = call(name, ...args);
@@ -52,7 +57,7 @@ describe('first run', () => {
     expect(data.jobs).toEqual([]);
     expect(data.settings.onboarded).toBe(false);
     expect(data.settings.secrets).toEqual({ gemini: false, openai_compat: false });
-    expect(s.ss().getSheets().map((x: any) => x.getName())).toEqual(['Jobs', 'JobText', 'CoverLetters', 'Activity']);
+    expect(s.ss().getSheets().map((x: any) => x.getName())).toEqual(['Jobs', 'JobText', 'CoverLetters', 'Activity', 'Studies', 'Exams', 'Tasks', 'Mail']);
     expect(s.state.props.SPREADSHEET_ID).toBe(s.ss().getId());
   });
 
@@ -346,5 +351,115 @@ describe('limits and privacy', () => {
     s.ok('deleteAllData', 'DELETE');
     expect(Object.keys(s.state.props)).toHaveLength(0);
     expect(s.state.triggers).toHaveLength(0);
+  });
+});
+
+
+describe('studies, exams and tasks', () => {
+  it('seeds the programme and exam catalogues once, then keeps user changes', () => {
+    const s = boot();
+    const data = s.ok('bootstrap');
+    expect(data.programs.length).toBeGreaterThan(100);
+    expect(data.exams.length).toBeGreaterThan(20);
+    expect(data.features.mail).toBe(true);
+    const mbz = data.programs.find((p: any) => /MBZUAI/.test(p.name) && /Natural Language/.test(p.name));
+    expect(mbz).toMatchObject({ deadline: '2026-12-15', funding: 'full', confirmed: true, stage: 'shortlisted', fit: '' });
+    const ese = data.exams.find((x: any) => x.key === 'upsc-ese-2027');
+    expect(ese.stage).toBe('dropped');
+    const p = s.ok('updateProgram', mbz.id, { stage: 'preparing', docs: { sop: 'doing', lor: 'done', bogus: 'x' }, myNotes: 'Email Prof. X' }).program;
+    expect(p.docs).toEqual({ sop: 'doing', lor: 'done' });
+    const again = s.ok('refreshCatalogs');
+    expect(again.added).toBe(0);
+    expect(again.programs.find((x: any) => x.id === mbz.id)).toMatchObject({ stage: 'preparing', myNotes: 'Email Prof. X' });
+    expect(s.ok('bootstrap').programs.length).toBe(data.programs.length);
+    const cse = data.exams.find((x: any) => x.key === 'upsc-cse-2027');
+    expect(s.ok('updateExam', cse.id, { stage: 'applied', applicationNo: 'OTR123' }).exam.stage).toBe('applied');
+    expect(s.call('updateExam', cse.id, { events: [] }).error?.code).toBe('BAD_INPUT');
+    const own = s.ok('createExam', { name: 'State PSC', events: [{ label: 'Prelims', date: '2027-06-01' }] }).exam;
+    expect(own.events).toEqual([{ label: 'Prelims', date: '2027-06-01', precision: 'day' }]);
+  });
+
+  it('manages tasks with dates and times', () => {
+    const s = boot();
+    const t = s.ok('createTask', { title: 'Book IELTS', due: '2026-11-21T10:00', area: 'studies' }).task;
+    expect(t).toMatchObject({ due: '2026-11-21T10:00', allDay: false, area: 'studies', status: 'todo' });
+    expect(s.ok('updateTask', t.id, { status: 'done' }).task.status).toBe('done');
+    expect(s.call('createTask', { title: 'x', due: 'tomorrowish' }).error?.code).toBe('BAD_INPUT');
+    expect(s.call('createTask', { title: 'x', link: 'javascript:alert(1)' }).error?.code).toBe('BAD_INPUT');
+    s.ok('deleteTask', t.id);
+    expect(s.ok('bootstrap').tasks).toHaveLength(0);
+  });
+
+  it('applies a private seed once (profile, roadmap, abroad internships, ratings)', async () => {
+    const personal = {
+      version: 1,
+      profile: { name: 'Seed User', skills: ['Python'], targetRoles: ['Machine Learning'] },
+      ratings: { 'msc-natural-language-processing-mbzuai': { fit: 'top', note: 'Best fit' }, 'cactus-internship-max-planck-institutes': { fit: 'top', note: 'Strong' } },
+      programStages: { 'msc-natural-language-processing-mbzuai': 'preparing' },
+      tasks: [{ title: 'Book IELTS', due: '2026-11-21', area: 'studies' }],
+    };
+    const personalCode = (await buildServer({ config: { features: { mail: false }, personal } })).code;
+    const s = boot({ code: personalCode });
+    const data = s.ok('bootstrap');
+    expect(data.profile.name).toBe('Seed User');
+    expect(data.tasks.map((t: any) => t.title)).toEqual(['Book IELTS']);
+    expect(data.programs.find((p: any) => p.key === 'msc-natural-language-processing-mbzuai')).toMatchObject({ fit: 'top', note: 'Best fit', stage: 'preparing' });
+    const abroad = data.jobs.filter((j: any) => j.sourceLabel === 'Research internships abroad');
+    expect(abroad.length).toBeGreaterThan(10);
+    expect(abroad.find((j: any) => /CaCT/.test(j.role)).notes).toContain('Strong');
+    expect(data.features.mail).toBe(false);
+    const again = s.ok('bootstrap');
+    expect(again.tasks).toHaveLength(1);
+    expect(again.jobs.length).toBe(data.jobs.length);
+  }, 60_000);
+});
+
+describe('mail', () => {
+  it('reads the inbox, tracks applications, adds tasks and filters noise', async () => {
+    const { sampleInbox } = await import('../tools/fixtures.mjs');
+    const inbox = sampleInbox();
+    const s = boot({ inbox: () => inbox });
+    s.ok('createJob', { company: 'Kestrel Maps', role: 'Software Engineer Intern', stage: 'applied' });
+    const out = s.ok('scanMail');
+    expect(out.report.added).toBe(inbox.length);
+    const byCompany = Object.fromEntries(out.jobs.map((j: any) => [j.company, j]));
+    expect(byCompany['Lumen Labs'].stage).toBe('interviewing');
+    expect(byCompany['Kestrel Maps'].stage).toBe('interviewing');
+    expect(byCompany['Northwind AI'].stage).toBe('saved');
+    expect(byCompany['Sable Security']).toBeUndefined();
+    const ignored = out.mail.filter((m: any) => m.status === 'ignored').map((m: any) => m.fromName);
+    expect(ignored).toEqual(expect.arrayContaining(['LinkedIn Job Alerts', 'Internshala', 'Corizo']));
+    const titles = out.tasks.map((t: any) => t.title);
+    expect(titles.some((t: string) => /^Complete Lumen Labs assessment/.test(t))).toBe(true);
+    expect(titles.some((t: string) => /^Interview: Kestrel Maps/.test(t))).toBe(true);
+    expect(titles.some((t: string) => /^Register: Northwind AI/.test(t))).toBe(true);
+    expect(out.tasks.find((t: any) => /Kestrel/.test(t.title)).allDay).toBe(false);
+    expect(out.tasks.every((t: any) => t.link.startsWith('https://mail.google.com/mail/u/'))).toBe(true);
+    const mbz = out.mail.find((m: any) => /MBZUAI/.test(m.subject));
+    expect(mbz).toMatchObject({ area: 'studies', status: 'new' });
+
+    const second = s.ok('scanMail');
+    expect(second.report.added).toBe(0);
+    expect(second.tasks.length).toBe(out.tasks.length);
+
+    const upsc = out.mail.find((m: any) => /upsc/.test(m.from));
+    expect(s.ok('mailAction', upsc.id, 'task').task.area).toBe('exams');
+    const sable = out.mail.find((m: any) => /Sable/.test(m.fromName));
+    const tracked = s.ok('mailAction', sable.id, 'apply-stage');
+    expect(tracked.job.stage).toBe('rejected');
+    expect(s.ok('mailAction', mbz.id, 'ignore').mail.status).toBe('ignored');
+    expect(s.call('mailAction', 'not-an-id!', 'done').error?.code).toBe('BAD_INPUT');
+  });
+
+  it('runs from the hourly worker and puts due items in the digest', async () => {
+    const { sampleInbox } = await import('../tools/fixtures.mjs');
+    const inbox = sampleInbox();
+    const s = boot({ inbox: () => inbox });
+    s.ok('saveSettings', { automation: { enabled: true, hour: 0, timezone: 'UTC', digestThreshold: 99 } });
+    expect(s.state.triggers).toHaveLength(1);
+    s.ctx.worker();
+    expect(s.ok('bootstrap').mail.length).toBe(inbox.length);
+    expect(s.state.mail).toHaveLength(1);
+    expect(s.state.mail[0].htmlBody).toContain('Due in the next 2 days');
   });
 });

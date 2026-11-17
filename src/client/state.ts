@@ -3,6 +3,17 @@ import type {
   ActivityEntry,
   BootstrapData,
   DeepPartial,
+  Exam,
+  ExamPatch,
+  Features,
+  MailAction,
+  MailItem,
+  MailReport,
+  Program,
+  ProgramPatch,
+  Task,
+  TaskInput,
+  TaskPatch,
   JobPatch,
   JobSummary,
   Profile,
@@ -15,7 +26,7 @@ import type {
 import { call, errorText } from './api';
 import { plural } from './lib/format';
 
-export type View = 'home' | 'discover' | 'pipeline' | 'insights' | 'settings';
+export type View = 'home' | 'calendar' | 'mail' | 'discover' | 'pipeline' | 'insights' | 'studies' | 'exams' | 'settings';
 
 // ---------------------------------------------------------------------------
 // Core state
@@ -33,6 +44,23 @@ export const lastRefresh = signal<RefreshReport | null>(null);
 export const migratedFromV1 = signal(0);
 export const jobsById = signal<Map<string, JobSummary>>(new Map());
 export const jobs = computed(() => Array.from(jobsById.value.values()));
+export const features = signal<Features>({ mail: false });
+export const programs = signal<Program[]>([]);
+export const exams = signal<Exam[]>([]);
+export const tasks = signal<Task[]>([]);
+export const mail = signal<MailItem[]>([]);
+export const lastMailScan = signal<MailReport | null>(null);
+export const scanningMail = signal(false);
+/** Calendar day the user picked (YYYY-MM-DD) for quick-add and agenda. */
+export const calendarDay = signal<string>(new Date().toISOString().slice(0, 10));
+
+function replaceById<T extends { id: string }>(list: T[], item: T): T[] {
+  const i = list.findIndex((x) => x.id === item.id);
+  if (i < 0) return [item, ...list];
+  const next = list.slice();
+  next[i] = item;
+  return next;
+}
 
 // ---------------------------------------------------------------------------
 // UI state
@@ -153,6 +181,12 @@ export function applyBoot(data: BootstrapData): void {
     activity.value = data.activity;
     lastRefresh.value = data.lastRefresh;
     migratedFromV1.value = data.migratedFromV1;
+    features.value = data.features ?? { mail: false };
+    programs.value = data.programs ?? [];
+    exams.value = data.exams ?? [];
+    tasks.value = data.tasks ?? [];
+    mail.value = data.mail ?? [];
+    lastMailScan.value = data.lastMailScan ?? null;
     setJobs(data.jobs);
     loaded.value = true;
     bootError.value = '';
@@ -301,6 +335,112 @@ export async function saveSettings(patch: DeepPartial<Settings>): Promise<boolea
   } catch (e) {
     toastError(e);
     return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Studies, exams, tasks, mail
+
+export async function updateProgram(id: string, patch: ProgramPatch): Promise<void> {
+  const before = programs.value.find((p) => p.id === id);
+  if (before) programs.value = replaceById(programs.value, { ...before, ...patch } as Program);
+  try {
+    const { program } = await call('updateProgram', id, patch);
+    programs.value = replaceById(programs.value, program);
+  } catch (e) {
+    if (before) programs.value = replaceById(programs.value, before);
+    toastError(e);
+  }
+}
+
+export async function updateExam(id: string, patch: ExamPatch): Promise<void> {
+  const before = exams.value.find((x) => x.id === id);
+  if (before) exams.value = replaceById(exams.value, { ...before, ...patch } as Exam);
+  try {
+    const { exam } = await call('updateExam', id, patch);
+    exams.value = replaceById(exams.value, exam);
+  } catch (e) {
+    if (before) exams.value = replaceById(exams.value, before);
+    toastError(e);
+  }
+}
+
+export async function createTask(input: TaskInput): Promise<Task | null> {
+  try {
+    const { task } = await call('createTask', input);
+    tasks.value = [...tasks.value, task];
+    return task;
+  } catch (e) {
+    toastError(e);
+    return null;
+  }
+}
+
+export async function updateTask(id: string, patch: TaskPatch): Promise<void> {
+  const before = tasks.value.find((t) => t.id === id);
+  if (before) tasks.value = replaceById(tasks.value, { ...before, ...patch } as Task);
+  try {
+    const { task } = await call('updateTask', id, patch);
+    tasks.value = replaceById(tasks.value, task);
+  } catch (e) {
+    if (before) tasks.value = replaceById(tasks.value, before);
+    toastError(e);
+  }
+}
+
+export async function toggleTask(t: Task): Promise<void> {
+  const done = t.status !== 'done';
+  await updateTask(t.id, { status: done ? 'done' : 'todo' });
+  if (done) toast('Task done', 'info', { label: 'Undo', run: () => void updateTask(t.id, { status: 'todo' }) });
+}
+
+export async function deleteTask(id: string): Promise<void> {
+  const before = tasks.value;
+  tasks.value = tasks.value.filter((t) => t.id !== id);
+  try {
+    await call('deleteTask', id);
+  } catch (e) {
+    tasks.value = before;
+    toastError(e);
+  }
+}
+
+export async function scanMailNow(): Promise<void> {
+  if (scanningMail.value) return;
+  scanningMail.value = true;
+  try {
+    const out = await call('scanMail');
+    batch(() => {
+      mail.value = out.mail;
+      tasks.value = out.tasks;
+      setJobs(out.jobs);
+      lastMailScan.value = out.report;
+    });
+    const r = out.report;
+    toast(
+      r.added
+        ? `${plural(r.added, 'new email')} read: ${r.jobsCreated + r.jobsUpdated} applications updated, ${plural(r.tasksCreated, 'task')} added`
+        : 'No new important emails',
+    );
+  } catch (e) {
+    toastError(e);
+  } finally {
+    scanningMail.value = false;
+  }
+}
+
+export async function mailAction(id: string, action: MailAction): Promise<void> {
+  try {
+    const out = await call('mailAction', id, action);
+    batch(() => {
+      mail.value = replaceById(mail.value, out.mail);
+      if (out.task) tasks.value = replaceById(tasks.value, out.task);
+      if (out.job) upsertJobs([out.job]);
+    });
+    if (action === 'task' && out.task) toast(`Task added for ${out.task.due ? out.task.due.slice(0, 10) : 'later'}`);
+    if (action === 'apply-stage' && out.job) toast(`${out.job.company}: ${stageName(out.job.stage)}`);
+  } catch (e) {
+    toastError(e);
   }
 }
 
