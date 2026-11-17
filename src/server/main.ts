@@ -11,7 +11,8 @@ import { toRpcError } from './errors';
 import { triggers } from './gas';
 import { log } from './log';
 import { job, rpc } from './rpc';
-import { flushActivity, resetRequestState } from './store/db';
+import { flushActivity, resetRequestState, SCHEMA_VERSION } from './store/db';
+import { workspaceReady } from './store/records';
 
 /** JSON that is safe to place inside an inline <script>. */
 function scriptSafeJson(value: unknown): string {
@@ -27,13 +28,18 @@ export function doGet(): GoogleAppsScript.HTML.HtmlOutput {
   resetRequestState();
   let data: BootstrapData | null = null;
   let error = '';
-  try {
-    data = api.bootstrap();
-  } catch (e) {
-    error = toRpcError(e, 'doGet').message;
-    log.error('doGet.bootstrap_failed', { message: String(e) });
-  } finally {
-    flushActivity();
+  // First-run setup (creating the sheet, catalogues, seed data) can take a minute on real
+  // Sheets. Never block the page on it: send the page now and let the client run setup
+  // through google.script.run, with a visible "setting up" message.
+  if (workspaceReady(SCHEMA_VERSION)) {
+    try {
+      data = api.bootstrap();
+    } catch (e) {
+      error = toRpcError(e, 'doGet').message;
+      log.error('doGet.bootstrap_failed', { message: String(e) });
+    } finally {
+      flushActivity();
+    }
   }
   const page = HtmlService.createHtmlOutputFromFile('index').getContent();
   // Function replacer: a string replacement would interpret "$&" etc. inside the JSON.

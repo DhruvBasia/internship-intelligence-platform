@@ -193,16 +193,24 @@ export function applyBoot(data: BootstrapData): void {
   });
 }
 
+/** 'loading' → 'setup' (first run is taking a while) → 'slow' (much longer than expected). */
+export const bootPhase = signal<'loading' | 'setup' | 'slow'>('loading');
+
 export async function loadBoot(): Promise<void> {
   const embedded = window.__IIP_BOOT__ as { data: BootstrapData | null; error: string } | string | undefined;
   if (embedded && typeof embedded === 'object' && embedded.data) {
     applyBoot(embedded.data);
     return;
   }
+  const t1 = setTimeout(() => (bootPhase.value = 'setup'), 2500);
+  const t2 = setTimeout(() => (bootPhase.value = 'slow'), 120_000);
   try {
     applyBoot(await call('bootstrap'));
   } catch (e) {
     bootError.value = errorText(e);
+  } finally {
+    clearTimeout(t1);
+    clearTimeout(t2);
   }
 }
 

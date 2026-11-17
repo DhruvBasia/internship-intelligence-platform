@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { computed } from '@preact/signals';
 import { CalendarDays, ChartColumn, ChevronDown, Compass, FileSpreadsheet, GraduationCap, House, Landmark, Link, Mail, Monitor, Moon, PenLine, Plus, RefreshCw, Search, Settings as Cog, SquareKanban, Sun } from 'lucide-preact';
-import { addOpen, aiReady, applyTheme, bootError, counts, email, filters, lastRefresh, loaded, mail, navigate, openJobId, refreshNow, refreshing, setFilters, settings, tasks, theme, usage, view, type View } from './state';
+import { addOpen, aiReady, applyTheme, bootError, bootPhase, counts, email, filters, lastRefresh, loaded, mail, navigate, openJobId, refreshNow, refreshing, setFilters, settings, tasks, theme, usage, view, type View } from './state';
 import { todayDay } from './lib/format';
 import { Calendar } from './views/Calendar';
 import { MailView } from './views/Mail';
@@ -233,12 +233,30 @@ export function App() {
     );
   }
   if (!loaded.value || !settings.value) {
+    const phase = bootPhase.value;
     return (
-      <div class="boot">
+      <div class="boot" role="status" aria-live="polite">
         <div class="boot-mark" aria-hidden="true">
           IQ
         </div>
-        <p>Loading your internships…</p>
+        {phase === 'loading' ? <p>Loading your internships…</p> : null}
+        {phase !== 'loading' ? (
+          <div style={{ maxWidth: 420, textAlign: 'center', display: 'grid', gap: 6 }}>
+            <p style={{ color: 'var(--ink)', fontWeight: 600 }}>Setting up your workspace</p>
+            <p class="small">
+              First time only: creating your tracker sheet in Google Drive and adding the study programmes, government exams and your roadmap. This can take a minute or two.
+            </p>
+            {phase === 'slow' ? (
+              <p class="small">
+                Still working. If nothing changes in another minute,{' '}
+                <a href="#" onClick={(e) => (e.preventDefault(), location.reload())}>
+                  reload the page
+                </a>
+                ; setup picks up where it stopped.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     );
   }

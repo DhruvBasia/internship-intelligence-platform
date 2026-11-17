@@ -61,8 +61,20 @@ describe('first run', () => {
     expect(s.state.props.SPREADSHEET_ID).toBe(s.ss().getId());
   });
 
+  it('sends the page immediately on a first visit and leaves setup to the client', () => {
+    const s = boot();
+    const out = s.ctx.doGet();
+    const payload = JSON.parse(/window\.__IIP_BOOT__ = (.*);<\/script>/.exec(out.getContent())![1]!);
+    expect(payload).toEqual({ data: null, error: '' });
+    expect(s.state.spreadsheets).toHaveLength(0);
+    s.ok('bootstrap');
+    const again = JSON.parse(/window\.__IIP_BOOT__ = (.*);<\/script>/.exec(s.ctx.doGet().getContent())![1]!);
+    expect(again.data.programs.length).toBeGreaterThan(100);
+  });
+
   it('serves the page with a script-safe boot payload and safe framing', () => {
     const s = boot();
+    s.ok('bootstrap');
     s.ok('saveProfile', { ...PROFILE, name: '</script><script>alert(1)</script>' });
     const out = s.ctx.doGet();
     const html = out.getContent();

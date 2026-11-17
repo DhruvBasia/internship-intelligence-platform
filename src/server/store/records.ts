@@ -122,6 +122,17 @@ export function syncCatalogs(force = false): { added: number } {
   return { added };
 }
 
+/**
+ * True when this user's workspace needs no first-run work (sheet, schema,
+ * catalogues, personal seed). Reads only user properties, so it is instant.
+ */
+export function workspaceReady(schemaVersion: string): boolean {
+  if (!props.get('SPREADSHEET_ID') || props.get('iip.schema') !== schemaVersion) return false;
+  if (props.get(PROP_CATALOG) !== CATALOG_VERSION) return false;
+  if (PERSONAL && Number(props.get(PROP_PERSONAL) || 0) < PERSONAL.version) return false;
+  return true;
+}
+
 /** Funded research internships abroad, as importable job postings. */
 export function abroadInternshipRaws(): RawJob[] {
   return ABROAD_INTERNSHIPS.map((row) => {
