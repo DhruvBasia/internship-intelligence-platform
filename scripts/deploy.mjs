@@ -19,7 +19,9 @@ if (!existsSync('.clasp.json')) {
 }
 
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
-const deploymentId = process.argv[2] || process.env.INTERNIQ_DEPLOYMENT_ID || '';
+// private/deploy.json (git-ignored) remembers your deployment so the web app URL never changes.
+const saved = existsSync('private/deploy.json') ? JSON.parse(readFileSync('private/deploy.json', 'utf8')).deploymentId : '';
+const deploymentId = process.argv[2] || process.env.INTERNIQ_DEPLOYMENT_ID || saved || '';
 const description = `InternIQ v${version} (${new Date().toISOString().slice(0, 10)})`;
 
 run('npm run check');
