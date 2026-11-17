@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2022", "dom"],
+    "types": ["google-apps-script", "node"],
+    "allowJs": true,
+    "checkJs": false,
+    "noUnusedLocals": false
+  },
+  "include": ["./**/*.ts", "../src/server/**/*.ts", "../src/shared/**/*.ts", "../tools/*.mjs", "../scripts/build.mjs"]
+}

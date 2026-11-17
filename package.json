@@ -1,0 +1,36 @@
+{
+  "name": "internship-intelligence-platform",
+  "version": "2.0.0",
+  "private": true,
+  "description": "InternIQ: AI-assisted internship discovery, fit scoring and application tracking on Google Apps Script.",
+  "license": "MIT",
+  "author": "Dhruv Basia",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:live": "node scripts/dev.mjs --live",
+    "typecheck": "tsc -p src/server && tsc -p src/client && tsc -p tests",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test && npm run build",
+    "dev:demo": "node scripts/dev.mjs --demo",
+    "push": "npm run check && clasp push --force",
+    "deploy": "node scripts/deploy.mjs"
+  },
+  "dependencies": {
+    "@preact/signals": "2.11.4",
+    "lucide-preact": "1.73.0",
+    "preact": "11.2.0"
+  },
+  "devDependencies": {
+    "@types/google-apps-script": "2.0.15",
+    "@types/node": "24.19.2",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  }
+}

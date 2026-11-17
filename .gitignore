@@ -8,17 +8,23 @@ desktop.ini
 .vscode/
 *.swp
 *.swo
+.claude/
 
 # Environment & credentials (safety first)
 .env
 .env*.local
 *.key
 *.pem
+.clasprc.json
+
+# Your Apps Script project binding (copy .clasp.json.example to .clasp.json)
+.clasp.json
 
 # Dependencies & build outputs
 node_modules/
 dist/
 build/
+coverage/
 
 # Logs
 *.log
