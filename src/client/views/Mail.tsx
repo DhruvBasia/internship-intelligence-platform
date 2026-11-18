@@ -3,9 +3,10 @@ import { ArrowRight, CalendarClock, Check, ExternalLink, Inbox, ListPlus, Mail a
 import type { MailCategory, MailItem } from '../../shared/types';
 import { STAGE_LABELS } from '../../shared/types';
 import { dueLabel, plural, relTime } from '../lib/format';
-import { features, jobsById, lastMailScan, mail, mailAction, navigate, openJobId, scanMailNow, scanningMail, settings } from '../state';
+import { features, gmail, jobsById, lastMailScan, mail, mailAction, navigate, openJobId, scanMailNow, scanningMail, settings } from '../state';
 import { Button, Callout, Empty, ExtLink } from '../ui';
 import { AREA_LABEL, AreaDot } from './Calendar';
+import { GmailConnect } from './Settings';
 
 const CAT_LABEL: Record<MailCategory, string> = {
   eligible: 'Eligible / register',
@@ -112,12 +113,18 @@ export function MailView() {
   const counts = { new: all.filter((m) => m.status === 'new').length, ignored: all.filter((m) => m.status === 'ignored').length };
   const last = lastMailScan.value;
 
-  if (!features.value.mail) {
+  if (!features.value.mail || gmail.value?.status !== 'active') {
     return (
-      <div class="card">
-        <Empty icon={<MailIcon size={30} />} title="Email scanning is off in this deployment">
-          The public build of InternIQ does not ask for Gmail access. Personal deployments built with private/config.json set to {'{ "mail": true }'} read your placement, admissions and exam emails (read-only) and turn them into application updates and calendar tasks.
-        </Empty>
+      <div class="card card-pad stack" style={{ maxWidth: 720, gap: 14 }}>
+        <div class="row" style={{ gap: 10 }}>
+          <MailIcon size={22} />
+          <h2 style={{ fontSize: 17, margin: 0 }}>Let InternIQ read your placement emails</h2>
+        </div>
+        <p class="ink-2" style={{ margin: 0 }}>
+          Connect Gmail and InternIQ sorts placement-cell notices, application confirmations, assessments, interview invites, offers and rejections, plus admissions and exam emails. It moves your applications along the pipeline and puts every date on your calendar.
+        </p>
+        <GmailConnect />
+        {all.length ? <p class="small muted">{plural(all.length, 'email')} from earlier scans are still listed in Settings → Account & data → Download.</p> : null}
       </div>
     );
   }
@@ -157,7 +164,7 @@ export function MailView() {
         )}
       </div>
       <p class="tiny muted row" style={{ gap: 6 }}>
-        <ShieldCheck size={13} /> Read-only Gmail access, inside your own Google account. {plural(all.length, 'email')} stored in your sheet's Mail tab; job alerts, OTPs and paid "training programs" are filtered out.
+        <ShieldCheck size={13} /> Read-only Gmail access ({gmail.value?.email}). {plural(all.length, 'email')} kept as short extracts; job alerts, OTPs and paid "training programs" are filtered out. Manage in Settings → Mail.
       </p>
     </div>
   );

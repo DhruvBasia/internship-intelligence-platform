@@ -159,7 +159,7 @@ function ImportForm() {
         </Button>
       </div>
       <div class="divider" />
-      <Field label="Import from a Google Sheet" id="imp-sheet" hint="Paste a sheet link you can open, such as your InternIQ v1 database or any tracker. v1 cover letters come across too.">
+      <Field label="Import from a Google Sheet" id="imp-sheet" hint="Share the sheet as &quot;Anyone with the link can view&quot; first (you can turn sharing off again after importing). Works with your InternIQ v1/v2 sheet or any tracker.">
         <div class="row">
           <input id="imp-sheet" class="input" type="url" placeholder="https://docs.google.com/spreadsheets/d/…" value={sheet} onInput={(e) => setSheet((e.currentTarget as HTMLInputElement).value)} />
           <Button loading={busy === 'sheet'} disabled={!sheet.trim()} onClick={() => void run('sheet', () => call('importFromSheet', sheet.trim()))}>

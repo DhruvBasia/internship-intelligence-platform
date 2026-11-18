@@ -161,7 +161,10 @@ export function Calendar() {
           ))}
         </div>
         <span class="spacer" />
-        <Button size="sm" variant="ghost" onClick={() => void exportIcs()} title="Export upcoming dates to Google/Apple Calendar">
+        <Button size="sm" variant="ghost" onClick={() => navigate('settings', 'tab=automation')} title="Subscribe in Google or Apple Calendar so dates stay in sync">
+          <CalendarPlus size={14} /> Subscribe
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => void exportIcs()} title="Download upcoming dates as a one-off .ics file">
           <Download size={14} /> Export .ics
         </Button>
       </div>

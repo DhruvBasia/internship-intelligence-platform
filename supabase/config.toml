@@ -1,0 +1,8 @@
+# Supabase CLI settings for InternIQ. Only what the CLI needs to link, push the
+# database migrations and deploy the function; everything else uses defaults.
+project_id = "interniq"
+
+[functions.api]
+# The function verifies tokens itself: the RPC endpoint needs a signed-in user,
+# while the Gmail OAuth callback, the cron endpoint and calendar feeds do not.
+verify_jwt = false

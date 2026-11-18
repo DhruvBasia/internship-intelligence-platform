@@ -321,8 +321,14 @@ describe('background worker', () => {
 describe('limits and privacy', () => {
   it('rate-limits expensive calls per user', async () => {
     const s = await boot();
-    for (let i = 0; i < 3; i++) await s.ok('refreshNow');
-    expect((await s.call('refreshNow')).error?.code).toBe('RATE_LIMITED');
+    // 3 per minute in fixed windows: within 7 calls at least one must be refused,
+    // even if a minute boundary falls in the middle.
+    const codes: string[] = [];
+    for (let i = 0; i < 7; i++) codes.push((await s.call('refreshNow')).error?.code ?? 'ok');
+    expect(codes.slice(0, 3)).toEqual(['ok', 'ok', 'ok']);
+    expect(codes).toContain('RATE_LIMITED');
+    const other = await boot();
+    expect((await other.call('refreshNow')).ok).toBe(true);
   });
 
   it('never leaks internals on unexpected errors', async () => {

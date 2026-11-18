@@ -1,16 +1,24 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <base target="_top" />
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="%CSP%" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <meta name="color-scheme" content="light dark" />
+    <title>InternIQ · internships, higher studies and govt exams</title>
+    <meta name="description" content="Free tracker for students: internships matched to your skills, your applications pipeline, funded master's and PhD programmes, government exams, and every deadline on one calendar." />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="InternIQ: internships, higher studies and govt exams in one tracker" />
+    <meta property="og:description" content="Internships matched to your skills, every application and deadline on one calendar, plus funded programmes abroad and government exam dates. Free for students." />
+    <meta property="og:url" content="%APP_URL%" />
+    <meta name="theme-color" content="#2a78d6" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <style>
-      /*__IIP_CSS__*/
-    </style>
+    <link rel="stylesheet" href="%APP_CSS%" />
+    <script src="%BOOT_JS%"></script>
   </head>
   <body>
     <div id="app">
@@ -20,59 +28,6 @@
       </div>
     </div>
     <noscript>InternIQ needs JavaScript enabled.</noscript>
-    <script>
-      /* Startup errors would otherwise be invisible inside Apps Script's sandboxed frame. */
-      (function () {
-        function show(msg) {
-          if (window.__IIP_STARTED__) return;
-          var el = document.getElementById('app');
-          if (!el) return;
-          el.innerHTML = '';
-          var box = document.createElement('div');
-          box.className = 'boot';
-          var p = document.createElement('p');
-          p.style.maxWidth = '640px';
-          p.style.whiteSpace = 'pre-wrap';
-          p.style.fontSize = '12px';
-          p.textContent = 'InternIQ could not start. Please send this to the developer:\n\n' + String(msg).slice(0, 1500);
-          box.appendChild(p);
-          el.appendChild(box);
-        }
-        window.__IIP_SHOW_ERROR__ = show;
-        window.addEventListener('error', function (e) {
-          show((e.error && e.error.stack) || e.message || 'Unknown error');
-        });
-        window.addEventListener('unhandledrejection', function (e) {
-          var r = e.reason;
-          show((r && (r.stack || r.message)) || String(r));
-        });
-      })();
-    </script>
-    <!--
-      Apps Script rewrites inline scripts and drops anything that looks like a line comment,
-      which corrupts minified code. So the app bundle and the boot data travel as base64url
-      text and are decoded here. Keep every script in this file free of double slashes.
-    -->
-    <script type="text/plain" id="iip-boot">__IIP_BOOT_B64__</script>
-    <script type="text/plain" id="iip-bundle">/*__IIP_JS_B64__*/</script>
-    <script>
-      (function () {
-        try {
-          var raw = document.getElementById('iip-bundle').textContent.replace(/\s+/g, '');
-          var bin = atob(raw.replace(/-/g, '+').replace(/_/g, '\x2f'));
-          var bytes = new Uint8Array(bin.length);
-          for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          var code = new TextDecoder('utf-8').decode(bytes);
-          var el = document.createElement('script');
-          /* The flag is set first, so it also records a run that later threw. */
-          el.textContent = 'window.__IIP_CODE_RAN__ = true;\n' + code;
-          document.body.appendChild(el);
-          /* Only if a content policy blocked the injected script. */
-          if (!window.__IIP_CODE_RAN__) (0, eval)(code);
-        } catch (e) {
-          if (window.__IIP_SHOW_ERROR__) window.__IIP_SHOW_ERROR__('Could not load the app code: ' + ((e && e.stack) || e));
-        }
-      })();
-    </script>
+    <script type="module" src="%APP_JS%"></script>
   </body>
 </html>

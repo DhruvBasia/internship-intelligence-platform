@@ -1,27 +1,43 @@
 /**
- * The built page as Apps Script will serve it. HtmlService rewrites inline scripts and drops
- * anything that looks like a "//" line comment, so a minified bundle (one long line full of
- * URLs and regexes) gets silently truncated. The page must carry no "//" inside any script.
+ * The build artefacts: a static site that works under a strict Content Security
+ * Policy, and a server bundle that runs on Supabase Edge Functions (Deno).
  */
 import { describe, expect, it } from 'vitest';
-import { buildClient } from '../scripts/build.mjs';
+import { buildClient, buildServer } from '../scripts/build.mjs';
 
-describe('client page', () => {
-  it('has no double slash inside any inline script or style', async () => {
-    const { html } = await buildClient();
-    const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
-    const styles = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]!);
-    expect(scripts.length).toBeGreaterThanOrEqual(4);
-    expect(styles.length).toBeGreaterThanOrEqual(1);
-    for (const body of [...scripts, ...styles]) expect(body).not.toContain('//');
+const CONFIG = { supabaseUrl: 'https://abcd.supabase.co', anonKey: 'sb_publishable_x', appUrl: 'https://student.github.io/interniq/', operator: 'Test', contact: '' };
+
+describe('web build', () => {
+  it('has no inline scripts and a CSP that only allows this app and its Supabase project', async () => {
+    const { html, files, config } = await buildClient({ config: CONFIG });
+    const inline = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)].filter((m) => !/\bsrc=/.test(m[1]!) || m[2]!.trim());
+    expect(inline).toEqual([]);
+    const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)![1]!;
+    expect(csp).toContain("script-src 'self'");
+    expect(csp).toContain("connect-src 'self' https://abcd.supabase.co");
+    expect(csp).not.toContain('unsafe-eval');
+    for (const name of Object.keys(files)) expect(html).toContain(name);
+    expect(config).toMatchObject({ mode: 'hosted', apiUrl: 'https://abcd.supabase.co/functions/v1/api' });
   }, 60_000);
 
-  it('ships the bundle as base64url that decodes to valid JavaScript', async () => {
-    const { html } = await buildClient();
-    const raw = /id="iip-bundle">([^<]*)<\/script>/.exec(html)![1]!;
-    expect(raw).toMatch(/^[A-Za-z0-9_-]+$/);
-    const js = Buffer.from(raw, 'base64url').toString('utf8');
-    expect(js.length).toBeGreaterThan(50_000);
-    expect(() => new Function(js)).not.toThrow();
+  it('builds the client against the dev server when asked', async () => {
+    const { config, html } = await buildClient({ dev: true, config: CONFIG });
+    expect(config).toMatchObject({ mode: 'dev', apiUrl: '/api' });
+    expect(html).toContain("connect-src 'self'");
+  }, 60_000);
+});
+
+describe('server build', () => {
+  it('bundles everything except Node built-ins and leaves out the private seed when there is none', async () => {
+    const { code } = await buildServer({ personal: null });
+    const imports = [...code.matchAll(/^import .* from ["']([^"']+)["'];?$/gm)].map((m) => m[1]);
+    expect(imports.every((s) => s!.startsWith('node:'))).toBe(true);
+    expect(code).toContain('Deno.serve');
+    expect(code).not.toContain('Seed User');
+  }, 60_000);
+
+  it('compiles the private seed in only when given', async () => {
+    const { code } = await buildServer({ personal: { version: 1, profile: { name: 'Seed User' } } });
+    expect(code).toContain('Seed User');
   }, 60_000);
 });

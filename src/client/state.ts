@@ -6,6 +6,7 @@ import type {
   Exam,
   ExamPatch,
   Features,
+  GmailInfo,
   MailAction,
   MailItem,
   MailReport,
@@ -23,10 +24,11 @@ import type {
   Stage,
   UsageView,
 } from '../shared/types';
-import { call, errorText } from './api';
+import { ApiError, call, errorText } from './api';
 import { plural } from './lib/format';
 
-export type View = 'home' | 'calendar' | 'mail' | 'discover' | 'pipeline' | 'insights' | 'studies' | 'exams' | 'settings';
+export const VIEWS = ['home', 'calendar', 'mail', 'discover', 'pipeline', 'insights', 'studies', 'exams', 'settings', 'admin'] as const;
+export type View = (typeof VIEWS)[number];
 
 // ---------------------------------------------------------------------------
 // Core state
@@ -35,13 +37,13 @@ export const bootError = signal('');
 export const loaded = signal(false);
 export const version = signal('');
 export const email = signal('');
-export const sheetUrl = signal('');
+export const isAdmin = signal(false);
 export const profile = signal<Profile | null>(null);
 export const settings = signal<SettingsView | null>(null);
 export const usage = signal<UsageView | null>(null);
 export const activity = signal<ActivityEntry[]>([]);
 export const lastRefresh = signal<RefreshReport | null>(null);
-export const migratedFromV1 = signal(0);
+export const gmail = signal<GmailInfo | null>(null);
 export const jobsById = signal<Map<string, JobSummary>>(new Map());
 export const jobs = computed(() => Array.from(jobsById.value.values()));
 export const features = signal<Features>({ mail: false });
@@ -109,10 +111,19 @@ export const DEFAULT_FILTERS: DiscoverFilters = {
 };
 export const filters = signal<DiscoverFilters>({ ...DEFAULT_FILTERS, ...stored<Partial<DiscoverFilters>>('filters', {}), q: '' });
 
-export function navigate(v: View): void {
+export function navigate(v: View, query = ''): void {
   view.value = v;
   remember('view', v);
+  const hash = `#/${v}${query ? '?' + query : ''}`;
+  if (location.hash !== hash) history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
   window.scrollTo({ top: 0 });
+}
+
+/** "#/mail?gmail=connected" → view 'mail' and its query. */
+export function readHash(): { view: View | null; params: URLSearchParams } {
+  const m = /^#\/([a-z]+)(?:\?(.*))?$/.exec(location.hash);
+  const v = m?.[1] as View | undefined;
+  return { view: v && (VIEWS as readonly string[]).includes(v) ? v : null, params: new URLSearchParams(m?.[2] ?? '') };
 }
 
 export function setFilters(patch: Partial<DiscoverFilters>): void {
@@ -174,13 +185,13 @@ export function applyBoot(data: BootstrapData): void {
   batch(() => {
     version.value = data.version;
     email.value = data.user.email;
-    sheetUrl.value = data.sheetUrl;
+    isAdmin.value = data.user.isAdmin;
     profile.value = data.profile;
     settings.value = data.settings;
     usage.value = data.usage;
     activity.value = data.activity;
     lastRefresh.value = data.lastRefresh;
-    migratedFromV1.value = data.migratedFromV1;
+    gmail.value = data.gmail ?? null;
     features.value = data.features ?? { mail: false };
     programs.value = data.programs ?? [];
     exams.value = data.exams ?? [];
@@ -193,37 +204,45 @@ export function applyBoot(data: BootstrapData): void {
   });
 }
 
-/** 'loading' → 'setup' (first run is taking a while) → 'slow' (much longer than expected). */
+/** 'loading' → 'setup' (first sign-in is taking a while) → 'slow' (much longer than expected). */
 export const bootPhase = signal<'loading' | 'setup' | 'slow'>('loading');
 
-/** Boot data embedded by doGet as base64url JSON (see server main.ts). */
-function readEmbeddedBoot(): { data: BootstrapData | null; error: string } | null {
-  try {
-    const raw = document.getElementById('iip-boot')?.textContent?.trim() ?? '';
-    if (!raw || raw.includes('__IIP_BOOT')) return null;
-    const bin = atob(raw.replace(/-/g, '+').replace(/_/g, '/'));
-    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    return JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    return null;
-  }
-}
-
 export async function loadBoot(): Promise<void> {
-  const embedded = readEmbeddedBoot();
-  if (embedded && embedded.data) {
-    applyBoot(embedded.data);
-    return;
-  }
   const t1 = setTimeout(() => (bootPhase.value = 'setup'), 2500);
-  const t2 = setTimeout(() => (bootPhase.value = 'slow'), 120_000);
+  const t2 = setTimeout(() => (bootPhase.value = 'slow'), 45_000);
   try {
     applyBoot(await call('bootstrap'));
   } catch (e) {
-    bootError.value = errorText(e);
+    if (!(e instanceof ApiError && e.code === 'UNAUTHENTICATED')) bootError.value = errorText(e);
   } finally {
     clearTimeout(t1);
     clearTimeout(t2);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Gmail
+
+/** Send the browser to Google's consent screen for read-only Gmail access. */
+export async function connectGmail(): Promise<void> {
+  try {
+    const { url } = await call('connectGmail');
+    location.assign(url);
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+export async function disconnectGmail(): Promise<void> {
+  try {
+    const out = await call('disconnectGmail');
+    batch(() => {
+      gmail.value = null;
+      settings.value = out.settings;
+    });
+    toast('Gmail disconnected. InternIQ can no longer read your inbox.');
+  } catch (e) {
+    toastError(e);
   }
 }
 

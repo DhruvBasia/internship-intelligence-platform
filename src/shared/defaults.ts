@@ -3,7 +3,7 @@ import { DEGREES, WORK_MODES } from './types';
 import { canonicalSkill } from './skills';
 import { clamp, collapseWhitespace, safeHttpUrl, splitList } from './text';
 
-export const APP_VERSION = '2.0.0';
+export const APP_VERSION = '3.0.0';
 export const APP_NAME = 'InternIQ';
 
 /** SimplifyJobs categories as they appear in listings.json. */

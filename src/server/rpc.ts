@@ -64,6 +64,7 @@ export const RPC: Record<ApiMethod, Entry> = {
   calendarFeed: { fn: api.calendarFeed, perMinute: 6 },
   adminOverview: { fn: api.adminOverview, perMinute: 20 },
   adminSetBlocked: { fn: api.adminSetBlocked, perMinute: 30 },
+  adminInstallCron: { fn: api.adminInstallCron, perMinute: 4 },
 };
 
 export function isMethod(name: unknown): name is ApiMethod {

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { computed } from '@preact/signals';
-import { CalendarDays, ChartColumn, ChevronDown, Compass, FileSpreadsheet, GraduationCap, House, Landmark, Link, Mail, Monitor, Moon, PenLine, Plus, RefreshCw, Search, Settings as Cog, SquareKanban, Sun } from 'lucide-preact';
-import { addOpen, aiReady, applyTheme, bootError, bootPhase, counts, email, filters, lastRefresh, loaded, mail, navigate, openJobId, refreshNow, refreshing, setFilters, settings, tasks, theme, usage, view, type View } from './state';
+import { CalendarDays, ChartColumn, ChevronDown, Compass, FileSpreadsheet, Gauge, GraduationCap, House, Landmark, Link, LogOut, Mail, Monitor, Moon, PenLine, Plus, RefreshCw, Search, Settings as Cog, SquareKanban, Sun } from 'lucide-preact';
+import { addOpen, aiReady, applyTheme, bootError, bootPhase, counts, email, filters, isAdmin, lastRefresh, loaded, mail, navigate, openJobId, refreshNow, refreshing, setFilters, settings, tasks, theme, usage, view, type View } from './state';
+import { session, signOut } from './auth';
+import { Admin } from './views/Admin';
 import { todayDay } from './lib/format';
 import { Calendar } from './views/Calendar';
 import { MailView } from './views/Mail';
@@ -34,6 +36,7 @@ const NAV: { id: View; label: string; Icon: typeof House; group: string }[] = [
   { id: 'studies', label: 'Further studies', Icon: GraduationCap, group: 'Beyond' },
   { id: 'exams', label: 'Govt exams', Icon: Landmark, group: 'Beyond' },
   { id: 'settings', label: 'Settings', Icon: Cog, group: '' },
+  { id: 'admin', label: 'Owner dashboard', Icon: Gauge, group: '' },
 ];
 const MOBILE: View[] = ['home', 'calendar', 'discover', 'studies', 'exams', 'mail', 'pipeline', 'settings'];
 
@@ -47,6 +50,7 @@ const TITLES: Record<View, string> = {
   studies: 'Further studies',
   exams: 'Government exams',
   settings: 'Settings',
+  admin: 'Owner dashboard',
 };
 
 function AddMenu() {
@@ -112,10 +116,10 @@ function Sidebar() {
           <div class="brand-sub">Internship intelligence</div>
         </div>
       </div>
-      {NAV.map(({ id, label, Icon, group }, i) => (
+      {NAV.filter((n) => n.id !== 'admin' || isAdmin.value).map(({ id, label, Icon, group }, i) => (
         <>
           {group && group !== NAV[i - 1]?.group ? <div class="nav-group">{group}</div> : null}
-          {!group ? <div class="nav-group" /> : null}
+          {!group && NAV[i - 1]?.group ? <div class="nav-group" /> : null}
           <button class="nav-item" aria-current={view.value === id ? 'page' : undefined} onClick={() => navigate(id)}>
             <Icon size={17} />
             {label}
@@ -146,8 +150,16 @@ function Sidebar() {
         <div class="row">
           <ThemeSwitch />
         </div>
-        <div class="sidebar-email" title={email.value}>
-          {email.value}
+        <div class="account">
+          <span class="avatar" aria-hidden="true">
+            {session.value?.avatar ? <img src={session.value.avatar} alt="" referrerpolicy="no-referrer" /> : (email.value[0] ?? '?').toUpperCase()}
+          </span>
+          <div class="sidebar-email" title={email.value} style={{ flex: 1, minWidth: 0 }}>
+            {email.value}
+          </div>
+          <Button size="sm" variant="ghost" onClick={() => void signOut()} aria-label="Sign out" title="Sign out">
+            <LogOut size={14} />
+          </Button>
         </div>
       </div>
     </nav>
@@ -242,9 +254,9 @@ export function App() {
         {phase === 'loading' ? <p>Loading your internships…</p> : null}
         {phase !== 'loading' ? (
           <div style={{ maxWidth: 420, textAlign: 'center', display: 'grid', gap: 6 }}>
-            <p style={{ color: 'var(--ink)', fontWeight: 600 }}>Setting up your workspace</p>
+            <p style={{ color: 'var(--ink)', fontWeight: 600 }}>Setting up your account</p>
             <p class="small">
-              First time only: creating your tracker sheet in Google Drive and adding the study programmes, government exams and your roadmap. This can take a minute or two.
+              First sign-in only: adding the researched study programmes and government exams to your account. This takes a few seconds.
             </p>
             {phase === 'slow' ? (
               <p class="small">
@@ -284,6 +296,8 @@ export function App() {
             <Studies />
           ) : v === 'exams' ? (
             <Exams />
+          ) : v === 'admin' && isAdmin.value ? (
+            <Admin />
           ) : (
             <SettingsView />
           )}

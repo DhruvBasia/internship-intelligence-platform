@@ -12,12 +12,11 @@ desktop.ini
 
 # Environment & credentials (safety first)
 .env
-.env*.local
+.env*
+!.env.example
 *.key
 *.pem
 .clasprc.json
-
-# Your Apps Script project binding (copy .clasp.json.example to .clasp.json)
 .clasp.json
 
 # Dependencies & build outputs
@@ -26,8 +25,15 @@ dist/
 build/
 coverage/
 
+# Generated server bundle (may contain your private seed): built by scripts/build.mjs
+supabase/functions/api/index.ts
+# Supabase CLI local state and secrets
+supabase/.temp/
+supabase/.branches/
+supabase/.env*
+
 # Logs
 *.log
 
-# Personal data and build flags for your own deployment (never committed)
+# Personal data for your own deployment (never committed)
 private/

@@ -2,7 +2,7 @@ import { useMemo } from 'preact/hooks';
 import { ArrowRight, CircleCheck, CircleX, Compass, History, RefreshCw, Sparkles, TriangleAlert } from 'lucide-preact';
 import type { ActivityEntry } from '../../shared/types';
 import { dueLabel, greeting, plural, relTime, todayDay } from '../lib/format';
-import { activity, aiReady, counts, exams, features, jobs, lastMailScan, lastRefresh, mail, migratedFromV1, navigate, profile, programs, refreshNow, refreshing, setFilters, usage } from '../state';
+import { activity, aiReady, counts, exams, features, jobs, lastMailScan, lastRefresh, mail, navigate, profile, programs, refreshNow, refreshing, setFilters, usage } from '../state';
 import { Button, Callout, Empty } from '../ui';
 import { AreaDot, EventRow, useEvents } from './Calendar';
 import { JobRow } from './common';
@@ -65,7 +65,6 @@ export function Home() {
         </div>
       </div>
 
-      {migratedFromV1.value > 1 ? <Callout kind="info">Welcome to v2. {plural(migratedFromV1.value, 'job')} from your v1 tracker came across, and your old sheets are kept as backups.</Callout> : null}
       {profileThin ? (
         <Callout kind="warn">
           Scores are rough until you add skills or paste your resume.{' '}

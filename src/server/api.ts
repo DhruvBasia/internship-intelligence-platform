@@ -1010,9 +1010,33 @@ function requireAdmin(): void {
   if (!ctx().isAdmin) throw new AppError('FORBIDDEN', 'Only the InternIQ owner can do that.');
 }
 
+async function cronStatus(): Promise<AdminOverview['automation']> {
+  try {
+    const s = await ctx().service.rpc<{ installed: boolean; lastRun: string | null; lastStatus: string | null }>('interniq_cron_status', {});
+    return { available: true, installed: s.installed, lastRun: s.lastRun ?? '', lastStatus: s.lastStatus ?? '' };
+  } catch {
+    // pg_cron is not available (local dev) or the cron migration was not pushed.
+    return { available: false, installed: false, lastRun: '', lastStatus: '' };
+  }
+}
+
 export async function adminOverview(): Promise<{ overview: AdminOverview }> {
   requireAdmin();
-  return { overview: await ctx().service.rpc<AdminOverview>('interniq_admin_overview', {}) };
+  const [overview, automation] = await Promise.all([ctx().service.rpc<Omit<AdminOverview, 'automation'>>('interniq_admin_overview', {}), cronStatus()]);
+  return { overview: { ...overview, automation } };
+}
+
+/** Schedule the hourly worker (pg_cron → this function's /cron endpoint). */
+export async function adminInstallCron(): Promise<{ automation: AdminOverview['automation'] }> {
+  requireAdmin();
+  const env = ctx().env;
+  if (!env.cronSecret || env.cronSecret.length < 16) throw badInput('INTERNIQ_CRON_SECRET is not set on the server. Run the setup script again.');
+  try {
+    await ctx().service.rpc('interniq_install_cron', { p_url: `${env.functionUrl}/cron`, p_secret: env.cronSecret });
+  } catch (e) {
+    throw new AppError('BAD_INPUT', `Could not schedule the hourly job: ${e instanceof Error ? e.message : String(e)}. Push the database migrations first (npm run deploy:server).`);
+  }
+  return { automation: await cronStatus() };
 }
 
 export async function adminSetBlocked(userIdArg: unknown, blockedArg: unknown) {

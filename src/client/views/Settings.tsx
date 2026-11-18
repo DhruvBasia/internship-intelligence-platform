@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import { Building2, ExternalLink, FileSpreadsheet, KeyRound, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, X } from 'lucide-preact';
+import { Building2, CalendarDays, Copy, Download, ExternalLink, FileSpreadsheet, KeyRound, LogOut, Mail as MailIcon, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Unplug, X } from 'lucide-preact';
 import { SUGGESTED_BOARDS } from '../../shared/boards';
 import { OPENAI_COMPAT_PRESETS, SIMPLIFY_CATEGORIES } from '../../shared/defaults';
 import { allSkillNames } from '../../shared/skills';
@@ -7,7 +7,8 @@ import type { Board, Degree, ModelInfo, Profile, SettingsView as SV, WorkMode } 
 import { call, errorText } from '../api';
 import { copyText, downloadText, jobsToCsv } from '../lib/files';
 import { plural } from '../lib/format';
-import { addOpen, aiReady, features, jobs, profile, remember, saveProfile, saveSettings, setJobs, settings, sheetUrl, toast, toastError, usage, version } from '../state';
+import { signOut } from '../auth';
+import { addOpen, aiReady, connectGmail, disconnectGmail, email, features, gmail, jobs, profile, readHash, remember, saveProfile, saveSettings, setJobs, settings, toast, toastError, usage, version } from '../state';
 import { Button, Callout, ChipsInput, ExtLink, Field, Meter, Toggle } from '../ui';
 
 type Tab = 'profile' | 'ai' | 'sources' | 'automation' | 'mail' | 'data';
@@ -22,7 +23,7 @@ export function ProfileForm({ value, onChange }: { value: Profile; onChange: (p:
   return (
     <div class="stack">
       <div class="grid cols-2" style={{ gap: 12 }}>
-        <Field label="Name" id="p-name" hint="Used in cover letters and the email digest.">
+        <Field label="Name" id="p-name" hint="Used in cover letters.">
           <input id="p-name" class="input" value={value.name} onInput={(e) => set('name', (e.currentTarget as HTMLInputElement).value)} />
         </Field>
         <Field label="School" id="p-school">
@@ -218,7 +219,7 @@ export function AiSetup({ compact }: { compact?: boolean }) {
                     Get a free key <ExternalLink size={11} />
                   </ExtLink>
                 ) : null}
-                {' · '}Stored only in your own Google account (Apps Script user properties), never in the sheet or the browser.
+                {' · '}Stored encrypted on the server and never sent back to the browser.
               </>
             }
           >
@@ -455,67 +456,173 @@ function AutomationTab() {
   const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const zones = Array.from(new Set([s.automation.timezone, browserTz, ...TIMEZONES].filter(Boolean)));
   return (
+    <div class="stack">
+      <section class="card card-pad stack">
+        <Toggle
+          checked={s.automation.enabled}
+          onChange={(v) => void saveSettings({ automation: { enabled: v, timezone: s.automation.timezone || browserTz } }).then((ok) => ok && toast(v ? 'Daily refresh scheduled' : 'Daily refresh turned off'))}
+          label="Refresh automatically every day"
+          hint="Runs on the InternIQ server even when this page is closed, then works through queued AI analysis in the following hours."
+        />
+        <div class="grid cols-2" style={{ gap: 12 }}>
+          <Field label="Time of day" id="a-hour">
+            <select id="a-hour" class="select" value={s.automation.hour} onChange={(e) => void saveSettings({ automation: { hour: Number((e.currentTarget as HTMLSelectElement).value) } })}>
+              {Array.from({ length: 24 }, (_, h) => (
+                <option value={h}>{new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Time zone" id="a-tz">
+            <select id="a-tz" class="select" value={s.automation.timezone} onChange={(e) => void saveSettings({ automation: { timezone: (e.currentTarget as HTMLSelectElement).value } })}>
+              {zones.map((z) => (
+                <option value={z}>{z}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <p class="tiny muted">Untouched postings in Discover older than 30 days are tidied away automatically. Saved, starred and applied jobs are always kept.</p>
+      </section>
+      <CalendarFeedCard />
+    </div>
+  );
+}
+
+/** Private ICS feed: subscribe once in Google or Apple Calendar, stays in sync. */
+export function CalendarFeedCard() {
+  const [url, setUrl] = useState('');
+  const [busy, setBusy] = useState('');
+  const load = async (rotate = false) => {
+    setBusy(rotate ? 'rotate' : 'load');
+    try {
+      setUrl((await call('calendarFeed', rotate)).url);
+      if (rotate) toast('New link created. The old one stopped working.');
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy('');
+    }
+  };
+  const webcal = url.replace(/^https:/, 'webcal:');
+  return (
     <section class="card card-pad stack">
-      <Toggle
-        checked={s.automation.enabled}
-        onChange={(v) => void saveSettings({ automation: { enabled: v, timezone: s.automation.timezone || browserTz } }).then((ok) => ok && toast(v ? 'Daily refresh scheduled' : 'Daily refresh turned off'))}
-        label="Refresh automatically every day"
-        hint="Runs in your Google account even when this page is closed, then works through queued AI analysis in the following hours."
-      />
-      <div class="grid cols-2" style={{ gap: 12 }}>
-        <Field label="Time of day" id="a-hour">
-          <select id="a-hour" class="select" value={s.automation.hour} onChange={(e) => void saveSettings({ automation: { hour: Number((e.currentTarget as HTMLSelectElement).value) } })}>
-            {Array.from({ length: 24 }, (_, h) => (
-              <option value={h}>{new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Time zone" id="a-tz">
-          <select id="a-tz" class="select" value={s.automation.timezone} onChange={(e) => void saveSettings({ automation: { timezone: (e.currentTarget as HTMLSelectElement).value } })}>
-            {zones.map((z) => (
-              <option value={z}>{z}</option>
-            ))}
-          </select>
-        </Field>
+      <div class="row">
+        <CalendarDays size={18} />
+        <h3 style={{ fontSize: 15 }}>Show InternIQ dates in your calendar</h3>
       </div>
-      <div class="divider" style={{ margin: '4px 0' }} />
-      <Toggle checked={s.automation.digest} onChange={(v) => void saveSettings({ automation: { digest: v } })} label="Email me a daily digest of new strong matches" hint="Sent from and to your own Gmail address, only on days with new matches." />
-      <label class="row small ink-2" style={{ gap: 10 }}>
-        Include matches scoring at least
-        <input type="range" min={50} max={95} step={5} value={s.automation.digestThreshold} onChange={(e) => void saveSettings({ automation: { digestThreshold: Number((e.currentTarget as HTMLInputElement).value) } })} />
-        <span class="num">{s.automation.digestThreshold}</span>
-      </label>
-      {!s.automation.enabled ? <Callout kind="plain">Digests are sent after the daily refresh, so turn that on first.</Callout> : null}
+      <p class="small ink-2">Subscribe once and every deadline, interview, task and exam date appears in Google Calendar or on your iPhone, updating by itself.</p>
+      {!url ? (
+        <div>
+          <Button loading={busy === 'load'} onClick={() => void load()}>
+            Get my calendar link
+          </Button>
+        </div>
+      ) : (
+        <>
+          <div class="feed-url">{url}</div>
+          <div class="row wrap">
+            <Button onClick={async () => ((await copyText(url)) ? toast('Link copied') : toast('Copy failed: select the link and copy it', 'error'))}>
+              <Copy size={15} /> Copy link
+            </Button>
+            <ExtLink class="btn" href={`https://calendar.google.com/calendar/render?cid=${encodeURIComponent(webcal)}`}>
+              Add to Google Calendar
+            </ExtLink>
+            <a class="btn" href={webcal}>
+              Add to Apple Calendar
+            </a>
+            <Button variant="ghost" loading={busy === 'rotate'} onClick={() => void load(true)}>
+              New link
+            </Button>
+          </div>
+          <p class="tiny muted">Anyone with this link can see your dates, so keep it private. "New link" turns the old one off. Google refreshes subscribed calendars every few hours.</p>
+        </>
+      )}
     </section>
+  );
+}
+
+/** Connect / status / disconnect for read-only Gmail access. */
+export function GmailConnect({ compact = false }: { compact?: boolean }) {
+  const g = gmail.value;
+  const [busy, setBusy] = useState(false);
+  if (!features.value.mail) {
+    return <Callout kind="plain">Gmail tracking is not switched on for this InternIQ server yet.</Callout>;
+  }
+  if (g && g.status === 'active') {
+    return (
+      <div class="row wrap" style={{ gap: 10 }}>
+        <ShieldCheck size={18} class="pos" />
+        <span>
+          Connected to <strong>{g.email || 'your Gmail'}</strong> (read-only)
+        </span>
+        <span class="spacer" />
+        <Button
+          size="sm"
+          variant="ghost"
+          loading={busy}
+          onClick={async () => {
+            if (!confirm('Disconnect Gmail? InternIQ will stop reading your inbox. Emails it already sorted stay here.')) return;
+            setBusy(true);
+            await disconnectGmail();
+            setBusy(false);
+          }}
+        >
+          <Unplug size={14} /> Disconnect
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div class="stack" style={{ gap: 10 }}>
+      {g && g.status !== 'active' ? <Callout kind="warn">Gmail access stopped working{g.error ? ` (${g.error})` : ''}. Connect again to resume.</Callout> : null}
+      {!compact ? (
+        <ul class="small ink-2" style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4 }}>
+          <li>Read-only: InternIQ can never send, delete, label or change anything in Gmail.</li>
+          <li>Only placement, application, admissions, exam and deadline emails are kept, as a subject line and a short extract.</li>
+          <li>Google will warn that InternIQ is not verified yet. That is expected for student projects: choose Advanced, then continue.</li>
+        </ul>
+      ) : null}
+      <div>
+        <Button
+          variant="primary"
+          loading={busy}
+          onClick={async () => {
+            setBusy(true);
+            await connectGmail();
+            setBusy(false);
+          }}
+        >
+          <MailIcon size={15} /> Connect Gmail (read-only)
+        </Button>
+      </div>
+    </div>
   );
 }
 
 function MailTab() {
   const s = settings.value!;
-  if (!features.value.mail) {
-    return (
-      <section class="card card-pad stack">
-        <h3 style={{ fontSize: 15 }}>Email scanning is not part of this deployment</h3>
-        <p class="small ink-2">
-          This is the public build, which never asks for Gmail access. To have InternIQ read your placement, admissions and exam emails (read-only), deploy your own copy with <code>private/config.json</code> set to <code>{'{ "mail": true }'}</code>. See docs/DEPLOY.md.
-        </p>
-      </section>
-    );
-  }
+  const connected = gmail.value?.status === 'active';
   return (
-    <section class="card card-pad stack">
-      <Toggle checked={s.mail.enabled} onChange={(v) => void saveSettings({ mail: { enabled: v } })} label="Scan my inbox every hour" hint="Reads only new placement, application, admissions, exam and deadline emails. Never sends, deletes, labels or changes anything in Gmail." />
-      <Toggle checked={s.mail.autoTrack} onChange={(v) => void saveSettings({ mail: { autoTrack: v } })} label="Update applications from emails" hint="Application confirmations, assessments, interviews, offers and rejections move the matching internship along your pipeline (never backwards); new companies are added." />
-      <Field label="First scan looks back (days)" id="m-look">
-        <input id="m-look" class="input" type="number" min={1} max={180} style={{ maxWidth: 140 }} value={s.mail.lookbackDays} onChange={(e) => void saveSettings({ mail: { lookbackDays: Number((e.currentTarget as HTMLInputElement).value) } })} />
-      </Field>
-      <Field label="Always-important senders" id="m-snd" hint="Addresses or domains, e.g. a professor's email, admissions@university.edu, or a company domain.">
-        <ChipsInput id="m-snd" values={s.mail.extraSenders} onChange={(v) => void saveSettings({ mail: { extraSenders: v } })} placeholder="admissions@mbzuai.ac.ae, kaust.edu.sa" />
-      </Field>
-      <Callout kind="plain">
-        Built-in rules (from your Placement Tracker routine): GGSIPU placement cell and POD, Internshala, Naukri, LinkedIn application confirmations, applicant-tracking systems and coding-test platforms; plus universities, uni-assist, DAAD, IELTS/TOEFL, UPSC, SSC, NTA and IBPS. Job alerts, OTPs, newsletters and paid "training & internship programs" are ignored.
-      </Callout>
-    </section>
+    <div class="stack">
+      <section class="card card-pad stack">
+        <h3 style={{ fontSize: 15 }}>Gmail</h3>
+        <GmailConnect />
+      </section>
+      {connected ? (
+        <section class="card card-pad stack">
+          <Toggle checked={s.mail.enabled} onChange={(v) => void saveSettings({ mail: { enabled: v } })} label="Scan my inbox every hour" hint="Reads only new placement, application, admissions, exam and deadline emails." />
+          <Toggle checked={s.mail.autoTrack} onChange={(v) => void saveSettings({ mail: { autoTrack: v } })} label="Update applications from emails" hint="Application confirmations, assessments, interviews, offers and rejections move the matching internship along your pipeline (never backwards); new companies are added." />
+          <Field label="First scan looks back (days)" id="m-look">
+            <input id="m-look" class="input" type="number" min={1} max={180} style={{ maxWidth: 140 }} value={s.mail.lookbackDays} onChange={(e) => void saveSettings({ mail: { lookbackDays: Number((e.currentTarget as HTMLInputElement).value) } })} />
+          </Field>
+          <Field label="Always-important senders" id="m-snd" hint="Addresses or domains, e.g. a professor's email, admissions@university.edu, or a company domain.">
+            <ChipsInput id="m-snd" values={s.mail.extraSenders} onChange={(v) => void saveSettings({ mail: { extraSenders: v } })} placeholder="admissions@mbzuai.ac.ae, kaust.edu.sa" />
+          </Field>
+          <Callout kind="plain">
+            Built-in rules: university placement cells and portals (e.g. GGSIPU CPC, POD), Internshala, Naukri, LinkedIn application confirmations, applicant-tracking systems and coding-test platforms; plus universities, uni-assist, DAAD, IELTS/TOEFL, UPSC, SSC, NTA and IBPS. Job alerts, OTPs, newsletters and paid "training & internship programs" are ignored.
+          </Callout>
+        </section>
+      ) : null}
+    </div>
   );
 }
 
@@ -525,20 +632,47 @@ function DataTab() {
   return (
     <div class="stack">
       <section class="card card-pad stack">
-        <h3 style={{ fontSize: 15 }}>Your data</h3>
-        <p class="small ink-2">Everything lives in a Google Sheet in your own Drive. You can open it, sort it, chart it, or share it; InternIQ keeps working with it.</p>
+        <h3 style={{ fontSize: 15 }}>Account</h3>
         <div class="row wrap">
-          <ExtLink href={sheetUrl.value} class="btn">
-            <FileSpreadsheet size={15} /> Open my sheet
-          </ExtLink>
+          <span class="ink-2">
+            Signed in as <strong>{email.value}</strong>
+          </span>
+          <span class="spacer" />
+          <Button onClick={() => void signOut()}>
+            <LogOut size={15} /> Sign out
+          </Button>
+        </div>
+      </section>
+      <section class="card card-pad stack">
+        <h3 style={{ fontSize: 15 }}>Your data</h3>
+        <p class="small ink-2">Download everything InternIQ stores for you, or move jobs in and out as a spreadsheet.</p>
+        <div class="row wrap">
+          <Button
+            loading={busy === 'export'}
+            onClick={async () => {
+              setBusy('export');
+              try {
+                const dump = await call('exportData');
+                const text = JSON.stringify(dump, null, 2);
+                if (downloadText(`interniq-export-${new Date().toISOString().slice(0, 10)}.json`, text, 'application/json')) toast('Your data was downloaded');
+                else if (await copyText(text)) toast('Download blocked here, so the export was copied to your clipboard');
+              } catch (e) {
+                toastError(e);
+              } finally {
+                setBusy('');
+              }
+            }}
+          >
+            <Download size={15} /> Download all my data
+          </Button>
           <Button
             onClick={async () => {
               const csv = jobsToCsv(jobs.value);
-              if (downloadText('interniq-all.csv', csv, 'text/csv')) toast('Exported all jobs');
+              if (downloadText('interniq-jobs.csv', csv, 'text/csv')) toast('Exported all jobs');
               else if (await copyText(csv)) toast('Download blocked here, so the CSV was copied to your clipboard');
             }}
           >
-            Export CSV
+            <FileSpreadsheet size={15} /> Jobs as CSV
           </Button>
           <Button onClick={() => (addOpen.value = 'import')}>Import…</Button>
           <Button
@@ -565,15 +699,17 @@ function DataTab() {
           <h3 style={{ fontSize: 15 }}>How InternIQ handles your data</h3>
         </div>
         <ul class="small ink-2" style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4 }}>
-          <li>The app runs as you, inside your Google account. The developer cannot see your jobs, profile or keys.</li>
-          <li>Jobs, notes and cover letters are stored in your sheet; settings and API keys in your private Apps Script properties.</li>
-          <li>Job sources are fetched from public APIs. AI providers receive only what you choose to analyse, with your own key.</li>
-          <li>Emails go only to your own address, and only if you turn the digest on.</li>
+          <li>Your account can only read and change its own data; the database enforces this for every request.</li>
+          <li>AI keys and Gmail access are encrypted on the server and never sent back to the browser.</li>
+          <li>Job sources are public APIs. AI providers receive only what you choose to analyse, with your own key.</li>
+          <li>
+            Read the <a href="privacy.html">privacy policy</a> for the details.
+          </li>
         </ul>
       </section>
       <section class="card card-pad stack" style={{ borderColor: 'color-mix(in srgb, var(--critical) 35%, transparent)' }}>
-        <h3 style={{ fontSize: 15 }}>Delete everything</h3>
-        <p class="small ink-2">Erases all jobs, notes, cover letters, settings, API keys and scheduled refreshes. The empty spreadsheet stays in your Drive for you to trash.</p>
+        <h3 style={{ fontSize: 15 }}>Delete my account</h3>
+        <p class="small ink-2">Permanently erases your account and everything in it: jobs, notes, cover letters, studies, exams, tasks, emails, settings and keys. Gmail access is revoked. This cannot be undone.</p>
         <div class="row">
           <input class="input" style={{ maxWidth: 200 }} placeholder="Type DELETE" value={confirmText} onInput={(e) => setConfirmText((e.currentTarget as HTMLInputElement).value)} aria-label="Type DELETE to confirm" />
           <Button
@@ -583,16 +719,16 @@ function DataTab() {
             onClick={async () => {
               setBusy('delete');
               try {
-                await call('deleteAllData', 'DELETE');
+                await call('deleteAccount', 'DELETE');
                 remember('view', 'home');
-                location.reload();
+                await signOut();
               } catch (e) {
                 toastError(e);
                 setBusy('');
               }
             }}
           >
-            <Trash2 size={15} /> Delete all my data
+            <Trash2 size={15} /> Delete my account
           </Button>
         </div>
       </section>
@@ -602,14 +738,14 @@ function DataTab() {
 }
 
 export function SettingsView() {
-  const [tab, setTab] = useState<Tab>('profile');
+  const [tab, setTab] = useState<Tab>(() => (readHash().params.get('tab') as Tab) || 'profile');
   const tabs: { id: Tab; label: string }[] = [
     { id: 'profile', label: 'Profile' },
     { id: 'ai', label: aiReady.value ? 'AI' : 'AI (off)' },
     { id: 'sources', label: 'Sources' },
-    { id: 'automation', label: 'Automation' },
+    { id: 'automation', label: 'Automation & calendar' },
     { id: 'mail', label: 'Mail' },
-    { id: 'data', label: 'Data & privacy' },
+    { id: 'data', label: 'Account & data' },
   ];
   return (
     <div style={{ maxWidth: 860 }}>

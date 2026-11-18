@@ -276,6 +276,8 @@ export interface AdminOverview {
   applied: number;
   signups: { day: string; count: number }[];
   recent: AdminUser[];
+  /** The hourly background job (pg_cron). */
+  automation: { available: boolean; installed: boolean; lastRun: string; lastStatus: string };
 }
 
 export interface JobInput {
@@ -358,6 +360,7 @@ export interface Api {
   calendarFeed(rotate?: boolean): { url: string };
   adminOverview(): { overview: AdminOverview };
   adminSetBlocked(userId: string, blocked: boolean): { userId: string; blocked: boolean };
+  adminInstallCron(): { automation: AdminOverview['automation'] };
 
   updateProgram(id: string, patch: ProgramPatch): { program: Program };
   createProgram(input: ProgramPatch & { name: string }): { program: Program };

@@ -3,11 +3,12 @@
  * for tests and the local dev server.
  */
 import { PGlite } from '@electric-sql/pglite';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PgliteDb, SUPABASE_STUB_SQL } from '../src/server/platform/pgliteDb';
 
-const MIGRATIONS = join(import.meta.dirname, '..', 'supabase', 'migrations');
+// Resolved from the repo root, so this also works when bundled for the dev server.
+const MIGRATIONS = existsSync(join(process.cwd(), 'supabase', 'migrations')) ? join(process.cwd(), 'supabase', 'migrations') : join(import.meta.dirname, '..', 'supabase', 'migrations');
 
 /** Migrations that need Supabase-only extensions (pg_cron, pg_net) are skipped here. */
 export function migrationSql(): string {

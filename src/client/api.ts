@@ -1,4 +1,6 @@
 import type { Api, ApiMethod, ErrorCode, RpcError, RpcResult } from '../shared/types';
+import { accessToken, sessionExpired } from './auth';
+import { CONFIG } from './config';
 
 export class ApiError extends Error {
   readonly code: ErrorCode;
@@ -10,49 +12,37 @@ export class ApiError extends Error {
   }
 }
 
-interface ScriptRunner {
-  withSuccessHandler(fn: (r: unknown) => void): ScriptRunner;
-  withFailureHandler(fn: (e: Error) => void): ScriptRunner;
-  [method: string]: unknown;
-}
+type Result<M extends ApiMethod> = Awaited<ReturnType<Api[M]>>;
 
-declare global {
-  interface Window {
-    google?: { script?: { run?: ScriptRunner } };
-    __IIP_BOOT__?: unknown;
+/** Typed RPC to the InternIQ server, with the signed-in user's token. */
+export async function call<M extends ApiMethod>(method: M, ...args: Parameters<Api[M]>): Promise<Result<M>> {
+  const token = await accessToken();
+  if (!token) {
+    sessionExpired();
+    throw new ApiError({ code: 'UNAUTHENTICATED', message: 'Please sign in again.' });
   }
-}
-
-function friendlyTransportError(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err ?? '');
-  if (/authoriz|permission/i.test(msg)) return 'Google needs you to re-authorise InternIQ. Reload the page to continue.';
-  if (/network|connection|timed? ?out|HTTP 0/i.test(msg)) return 'Network hiccup talking to Google. Check your connection and try again.';
-  if (/Exceeded maximum execution time/i.test(msg)) return 'That took too long for Google Apps Script. Try again with fewer items.';
-  return 'Something went wrong talking to the server. Please try again.';
-}
-
-/** Typed promise wrapper around google.script.run with the server's RpcResult envelope. */
-export function call<M extends ApiMethod>(method: M, ...args: Parameters<Api[M]>): Promise<ReturnType<Api[M]>> {
-  return new Promise((resolve, reject) => {
-    const run = window.google?.script?.run;
-    if (!run) {
-      reject(new ApiError({ code: 'INTERNAL', message: 'InternIQ must be opened from its Apps Script web app URL.' }));
-      return;
-    }
-    const runner = run
-      .withSuccessHandler((res: unknown) => {
-        const r = res as RpcResult<ReturnType<Api[M]>> | null;
-        if (r && r.ok) resolve(r.data);
-        else reject(new ApiError(r && !r.ok ? r.error : { code: 'INTERNAL', message: 'Empty response from server.' }));
-      })
-      .withFailureHandler((err: Error) => reject(new ApiError({ code: 'INTERNAL', message: friendlyTransportError(err) })));
-    const fn = runner[method] as ((...a: unknown[]) => void) | undefined;
-    if (typeof fn !== 'function') {
-      reject(new ApiError({ code: 'INTERNAL', message: `Server method ${method} is missing. Redeploy the latest version.` }));
-      return;
-    }
-    fn.apply(runner, args as unknown[]);
-  });
+  let res: Response;
+  try {
+    res = await fetch(CONFIG.apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(CONFIG.anonKey ? { apikey: CONFIG.anonKey } : {}) },
+      body: JSON.stringify({ method, args }),
+    });
+  } catch {
+    throw new ApiError({ code: 'INTERNAL', message: 'Network problem. Check your connection and try again.' });
+  }
+  let body: RpcResult<Result<M>>;
+  try {
+    body = (await res.json()) as RpcResult<Result<M>>;
+  } catch {
+    throw new ApiError({
+      code: res.status === 504 || res.status === 546 ? 'BUSY' : 'INTERNAL',
+      message: res.status === 504 || res.status === 546 ? 'That took too long. Please try again.' : `The server sent an unexpected reply (HTTP ${res.status}).`,
+    });
+  }
+  if (body.ok) return body.data;
+  if (body.error.code === 'UNAUTHENTICATED') sessionExpired();
+  throw new ApiError(body.error);
 }
 
 export function errorText(e: unknown): string {

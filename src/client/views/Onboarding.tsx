@@ -90,8 +90,8 @@ export function Onboarding() {
                 {[
                   'Free match scores on every posting, with no key needed',
                   'Optional AI analysis and cover letters with a free Gemini or Groq key',
-                  'Your data stays in a Google Sheet in your own Drive',
-                  'Daily refresh and email digest, even with the tab closed',
+                  'Your data is private to your account; export or delete it any time',
+                  'Daily refresh and optional Gmail tracking, even with the tab closed',
                 ].map((t) => (
                   <li>
                     <Check size={15} class="pos" />
@@ -158,7 +158,7 @@ export function Onboarding() {
             <>
               <h2 style={{ fontSize: 18 }}>Ready</h2>
               <p class="ink-2">
-                InternIQ will create your tracker sheet, fetch the latest internships{categories.length ? ` (${categories.join(', ')})` : ''}
+                InternIQ will fetch the latest internships{categories.length ? ` (${categories.join(', ')})` : ''}
                 {boards.length ? ` plus ${boards.length} compan${boards.length === 1 ? 'y' : 'ies'}` : ''}, and score them against your profile.
               </p>
               {status ? (
@@ -190,7 +190,7 @@ export function Onboarding() {
           </div>
         </div>
         <p class="tiny muted" style={{ textAlign: 'center', marginTop: 14 }}>
-          Signed in with Google. InternIQ opens only its own tracker sheet (and any sheet you choose to import), emails only you, and fetches public job listings.
+          Signed in with Google. Your data is visible only to your account; InternIQ reads Gmail only if you connect it, read-only.
         </p>
       </div>
     </div>
