@@ -87,7 +87,13 @@ export const view = signal<View>(stored<View>('view', 'home'));
 export const openJobId = signal<string | null>(null);
 export const addOpen = signal<null | 'url' | 'manual' | 'import'>(null);
 export const refreshing = signal(false);
-export const theme = signal<'system' | 'light' | 'dark'>(stored('theme', 'system'));
+/**
+ * Dark ("Night shift") unless the student picks another theme. Stored under a
+ * new key so the redesign starts everyone on dark once; the old key saved
+ * 'system' on every load, so it cannot tell a real choice from the default.
+ */
+const THEME_KEY = 'themeV2';
+export const theme = signal<'system' | 'light' | 'dark'>(stored(THEME_KEY, 'dark'));
 
 export interface DiscoverFilters {
   q: string;
@@ -134,7 +140,7 @@ export function setFilters(patch: Partial<DiscoverFilters>): void {
 
 export function applyTheme(t: 'system' | 'light' | 'dark'): void {
   theme.value = t;
-  remember('theme', t);
+  remember(THEME_KEY, t);
   if (t === 'system') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.setAttribute('data-theme', t);
 }

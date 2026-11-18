@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { computed } from '@preact/signals';
-import { CalendarDays, ChartColumn, ChevronDown, Compass, FileSpreadsheet, Gauge, GraduationCap, House, Landmark, Link, LogOut, Mail, Monitor, Moon, PenLine, Plus, RefreshCw, Search, Settings as Cog, SquareKanban, Sun } from 'lucide-preact';
+import { CalendarDays, ChartColumn, ChevronDown, Compass, FileSpreadsheet, Gauge, GraduationCap, House, Landmark, Link, LogOut, Mail, Monitor, Moon, PenLine, Plus, RefreshCw, Search, Settings as Cog, Sparkles, SquareKanban, Sun } from 'lucide-preact';
 import { addOpen, aiReady, applyTheme, bootError, bootPhase, counts, email, filters, isAdmin, lastRefresh, loaded, mail, navigate, openJobId, refreshNow, refreshing, setFilters, settings, tasks, theme, usage, view, type View } from './state';
 import { session, signOut } from './auth';
 import { Admin } from './views/Admin';
@@ -110,11 +110,10 @@ function Sidebar() {
   return (
     <nav class="sidebar" aria-label="Main">
       <div class="brand">
-        <div class="logo-mark" aria-hidden="true">IQ</div>
-        <div>
-          <div class="brand-name">InternIQ</div>
-          <div class="brand-sub">Internship intelligence</div>
+        <div class="logo-mark" aria-hidden="true">
+          iq
         </div>
+        <div class="brand-name">InternIQ</div>
       </div>
       {NAV.filter((n) => n.id !== 'admin' || isAdmin.value).map(({ id, label, Icon, group }, i) => (
         <>
@@ -126,18 +125,19 @@ function Sidebar() {
             {id === 'discover' && c.by.discovered ? <span class="count">{c.by.discovered}</span> : null}
             {id === 'pipeline' && c.active ? <span class="count">{c.active}</span> : null}
             {id === 'mail' && newMail.value ? <span class="count pill">{newMail.value}</span> : null}
-            {id === 'calendar' && dueToday.value ? <span class="count pill">{dueToday.value}</span> : null}
+            {id === 'calendar' && dueToday.value ? <span class="count pill warn">{dueToday.value}</span> : null}
           </button>
         </>
       ))}
       <div class="sidebar-foot">
         {s && aiReady.value && u ? (
-          <div class="stack" style={{ gap: 6 }}>
+          <div class="ai-card">
             <div class="row small">
+              <Sparkles size={14} style={{ color: 'var(--accent-ink)' }} aria-hidden="true" />
               <span class="ink-2">AI today</span>
               <span class="spacer" />
-              <span class="num muted">
-                {u.aiRequests}/{u.dailyLimit}
+              <span class="num muted" style={{ fontFamily: 'var(--mono)', fontSize: 11.5 }}>
+                {u.aiRequests} / {u.dailyLimit}
               </span>
             </div>
             <Meter value={u.aiRequests} max={u.dailyLimit} label="AI requests used today" />
@@ -185,14 +185,17 @@ function MobileNav() {
 function Topbar() {
   const v = view.value;
   const searchRef = useRef<HTMLInputElement>(null);
+  const jumpToSearch = () => {
+    if (view.value !== 'discover' && view.value !== 'pipeline') navigate('discover');
+    setTimeout(() => searchRef.current?.focus(), 0);
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (/INPUT|TEXTAREA|SELECT/.test(t.tagName) || t.isContentEditable) return;
-      if (e.key === '/') {
+      if (e.key === '/' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) {
         e.preventDefault();
-        if (view.value !== 'discover' && view.value !== 'pipeline') navigate('discover');
-        setTimeout(() => searchRef.current?.focus(), 0);
+        jumpToSearch();
       } else if (e.key === 'n' && !e.metaKey && !e.ctrlKey) {
         addOpen.value = 'url';
       }
@@ -201,9 +204,24 @@ function Topbar() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
   const last = lastRefresh.value;
+  const failed = last ? last.sources.filter((s) => s.error).length : 0;
   return (
     <header class="topbar">
-      <h1>{TITLES[v]}</h1>
+      {v === 'home' ? (
+        <button type="button" class="jump" onClick={jumpToSearch} aria-label="Search internships (shortcut Ctrl K)">
+          <Search size={15} aria-hidden="true" />
+          <span>Search roles and companies</span>
+          <kbd class="kbd">Ctrl K</kbd>
+        </button>
+      ) : (
+        <h1>{TITLES[v]}</h1>
+      )}
+      {v === 'home' ? (
+        <span class="topbar-sync" title={last ? `Last refreshed ${new Date(last.finishedAt).toLocaleString()}` : undefined}>
+          <span class={`sync-dot${!last ? ' off' : failed ? ' bad' : ''}`} aria-hidden="true" />
+          {!last ? 'Not refreshed yet' : failed ? `Synced ${relTime(last.finishedAt)}, ${failed} source${failed > 1 ? 's' : ''} failed` : `Synced ${relTime(last.finishedAt)}`}
+        </span>
+      ) : null}
       {v === 'discover' || v === 'pipeline' ? (
         <div class="search">
           <Search size={15} />
