@@ -211,6 +211,12 @@ export function extractDue(text: string, emailIso: string, category: MailCategor
 
 // ---------------------------------------------------------------------------
 
+/** InternIQ's own daily digest (earlier versions emailed it from the student's account as "InternIQ"). */
+export function isInternIqDigest(fromName: string, subject: string): boolean {
+  if (/^internIQ$/i.test(fromName.trim())) return true;
+  return /^\d+ new internship match(es)? \(\d+\+\)|^\d+ things? due in the next \d+ days?$/i.test(subject.trim());
+}
+
 export function classifyMail(m: RawMail, opts: { extraSenders?: string[] } = {}): Classification {
   const { name: fromName, address, domain } = parseFrom(m.from);
   // The snippet is a truncated copy of the body; only use it when there is no body.
@@ -221,7 +227,8 @@ export function classifyMail(m: RawMail, opts: { extraSenders?: string[] } = {})
   const extraSender = senderMatches(address, opts.extraSenders ?? []);
   const isApplicationConfirmation = /application was sent|your application (to|for|was|has)/i.test(m.subject);
 
-  const noise = !extraSender && !isApplicationConfirmation && NOISE.some((re) => re.test(m.subject) || re.test(m.snippet));
+  const noise =
+    isInternIqDigest(fromName, m.subject) || (!extraSender && !isApplicationConfirmation && NOISE.some((re) => re.test(m.subject) || re.test(m.snippet)));
 
   let category: MailCategory = 'other';
   for (const [cat, re] of RULES) {

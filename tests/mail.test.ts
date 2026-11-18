@@ -58,6 +58,21 @@ describe('email triage', () => {
     expect(sent.category).toBe('applied');
   });
 
+  it("ignores InternIQ's own digest emails, even from the student's own address", () => {
+    const digest = classifyMail(
+      mail({
+        subject: '12 new internship matches (75+) · 1 due soon',
+        from: 'InternIQ <student@gmail.com>',
+        body: 'Due in the next 2 days: Fri 20 Nov Check passport is valid through 2028 (apply/renew if not). New matches: ML Intern at Acme',
+      }),
+      { extraSenders: ['gmail.com'] },
+    );
+    expect(digest).toMatchObject({ noise: true, important: false });
+    expect(classifyMail(mail({ subject: '2 things due in the next 2 days', from: 'Me <student@gmail.com>' })).noise).toBe(true);
+    // A real admissions email that mentions matches is still kept.
+    expect(classifyMail(mail({ subject: 'MSc application: 3 new documents uploaded', from: 'MBZUAI Admissions <admissions@mbzuai.ac.ae>' })).noise).toBe(false);
+  });
+
   it('routes admissions and exam emails to their sections', () => {
     const adm = classifyMail(mail({ subject: 'Reminder to submit your recommendation letters', body: 'Referees must submit before the application deadline of 15 December 2026.', from: 'MBZUAI Admissions <admissions@mbzuai.ac.ae>' }));
     expect(adm).toMatchObject({ area: 'studies', due: '2026-12-15' });
