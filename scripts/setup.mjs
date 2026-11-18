@@ -116,7 +116,7 @@ async function main() {
   run('npx', ['supabase', 'db', 'push']);
   run('npx', ['supabase', 'secrets', 'set', '--env-file', 'private/server.env', '--project-ref', ref]);
   run('node', ['scripts/build.mjs']);
-  run('npx', ['supabase', 'functions', 'deploy', 'api', '--project-ref', ref, '--no-verify-jwt']);
+  run('npx', ['supabase', 'functions', 'deploy', 'api', '--project-ref', ref, '--no-verify-jwt', '--use-api']);
 
   console.log('\nChecking the deployed API…');
   try {

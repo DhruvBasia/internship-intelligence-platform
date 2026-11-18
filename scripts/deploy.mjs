@@ -28,7 +28,7 @@ if (!ref) {
 
 run('npm', ['run', 'check']);
 if (process.argv.includes('--db')) run('npx', ['supabase', 'db', 'push']);
-run('npx', ['supabase', 'functions', 'deploy', 'api', '--project-ref', ref, '--no-verify-jwt']);
+run('npx', ['supabase', 'functions', 'deploy', 'api', '--project-ref', ref, '--no-verify-jwt', '--use-api']);
 
 const res = await fetch(`https://${ref}.supabase.co/functions/v1/api/health`).catch(() => null);
 const body = res ? await res.json().catch(() => ({})) : {};
