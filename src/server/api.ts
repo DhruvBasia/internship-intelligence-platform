@@ -42,7 +42,9 @@ import { templateLetter } from './ai/prompts';
 import { AppError, badInput, notFound } from './errors';
 import { features } from './flags';
 import { parseDelimited, rowsToRawJobs } from './importers';
+import { log } from './log';
 import { gmailConnectUrl, gmailDisconnect } from './mail/gmail';
+import { repairEmailTracking, repairNeeded } from './mail/repair';
 import { getLastMailScan, scanMail as scanMailNow, shouldAdvance } from './mail/sync';
 import { ctx } from './platform/context';
 import { randomToken } from './platform/crypto';
@@ -145,6 +147,15 @@ export async function bootstrap(): Promise<BootstrapData> {
       await syncCatalogs();
       await applyPersonalSeedOnce();
     }, 60_000);
+    dropTableCache();
+  }
+  // Once per classifier improvement: tidy up applications earlier versions read from email.
+  if (repairNeeded()) {
+    try {
+      await repairEmailTracking();
+    } catch (e) {
+      log.warn('mail.repair_failed', { message: e instanceof Error ? e.message : String(e) });
+    }
     dropTableCache();
   }
   const settings = user.getSettings();

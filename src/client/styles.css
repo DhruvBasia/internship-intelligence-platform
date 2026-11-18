@@ -904,6 +904,9 @@ input[type='range'] {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   min-height: 200px;
+  /* Grid items default to min-width: auto, so one long company name would push
+     the card out of its column and over the next one. */
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -925,6 +928,7 @@ input[type='range'] {
 }
 .column-body {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding: 4px 10px 12px;
 }
@@ -936,7 +940,9 @@ input[type='range'] {
   box-shadow: var(--shadow-sm);
   cursor: grab;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
+  min-width: 0;
 }
 .kcard:hover {
   border-color: var(--line-2);
@@ -948,6 +954,11 @@ input[type='range'] {
   font-weight: 600;
   font-size: 13.5px;
   line-height: 1.35;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* Drawer / modal */

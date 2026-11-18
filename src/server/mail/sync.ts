@@ -151,7 +151,7 @@ export async function scanMail(opts: { deadline: Deadline }): Promise<{ report: 
         snippet: msg.snippet ?? '',
         body: bodyOf(msg.payload),
       };
-      items.push({ raw, cls: classifyMail(raw, { extraSenders: settings.mail.extraSenders }) });
+      items.push({ raw, cls: classifyMail(raw, { extraSenders: settings.mail.extraSenders, selfEmail: ctx().gmail?.email || currentUserEmail() }) });
     } catch (e) {
       log.warn('mail.get_failed', { message: errorMessage(e).slice(0, 200) });
     }
@@ -226,7 +226,7 @@ export async function scanMail(opts: { deadline: Deadline }): Promise<{ report: 
                 sourceRef: raw.id,
                 url: '',
                 company: cls.company,
-                role: cls.role || truncate(raw.subject, 120),
+                role: cls.role || truncate(cls.cleanSubject, 120),
                 location: '',
                 description: truncate(raw.snippet, 600),
                 requirements: '',

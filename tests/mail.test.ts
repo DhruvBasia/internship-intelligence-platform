@@ -58,6 +58,43 @@ describe('email triage', () => {
     expect(sent.category).toBe('applied');
   });
 
+  it('reads company, role and stage from real-world placement emails', () => {
+    const unstop = 'Unstop <noreply@emails.unstop.com>';
+    const c = (subject: string, from: string, extra: Partial<RawMail> = {}, opts: Parameters<typeof classifyMail>[1] = {}) => classifyMail(mail({ subject, from, ...extra }), opts);
+
+    expect(c('Your Application for Data Science Internship at Acmeflow successfully submitted', unstop)).toMatchObject({ company: 'Acmeflow', role: 'Data Science Internship', suggestedStage: 'applied' });
+    expect(c('Your Application for React & DB Developer Internship at Nimbus.in successfully submitted', unstop).company).toBe('Nimbus');
+
+    const unfinished = c('Finish your application for the Web Development Internship role at Cobalt.store', unstop);
+    expect(unfinished).toMatchObject({ company: 'Cobalt', suggestedStage: 'saved', category: 'eligible' });
+    expect(unfinished.taskTitle).toMatch(/^Finish application: Web Development Internship at Cobalt/);
+    expect(c('Elnakeeb Pty Ltd. is still accepting applications - don’t forget to submit yours.', 'SEEK Reminders <noreply@s.seek.com.au>')).toMatchObject({ company: 'Elnakeeb Pty Ltd.', suggestedStage: 'saved' });
+
+    const admit = c('Northwind Recruitment Process: Download your Admit Card NOW!', 'donotreply.campus <donotreply@email.campus.northwind.com>', { body: 'Your online assessment for the Graduate Engineer role is on 20 November.' });
+    expect(admit.company).toBe('Northwind');
+    const forwarded = c('Fwd: Northwind Recruitment Process: Download your Admit Card NOW!', 'Asha K <asha@gmail.com>', { body: 'Online assessment for the Graduate Engineer role.' }, { selfEmail: 'asha@gmail.com' });
+    expect(forwarded.company).toBe('Northwind');
+    expect(forwarded.cleanSubject).toBe('Northwind Recruitment Process: Download your Admit Card NOW!');
+
+    expect(c('We received your Stripe Application', 'no-reply@us.greenhouse-mail.io').company).toBe('Stripe');
+    expect(c('Registration Confirmed - Cloud Analogy Drive on Monday, 16 November 2026', 'KodNest <hi@kodnest.com>').company).toBe('Cloud Analogy');
+    expect(c('Application Status Update – Cloud Analogy', 'KodNest <hi@kodnest.com>', { body: 'Unfortunately we will not be moving forward with your application.' })).toMatchObject({ company: 'Cloud Analogy', suggestedStage: 'rejected' });
+  });
+
+  it('keeps job alerts, codes, platform welcomes, events and marketing out of the pipeline', () => {
+    const c = (subject: string, from: string, body = '') => classifyMail(mail({ subject, from, body }));
+    expect(c('Security code for your application to Stripe', 'Greenhouse <no-reply@us.greenhouse-mail.io>').noise).toBe(true);
+    expect(c('Hiring now: new opportunities at Gedu Services and others', 'Internshala <student@internshala.com>').noise).toBe(true);
+    expect(c('Asha, apply to Forward Deployed Engineer at Josh Talks and more', 'LinkedIn <jobs-noreply@linkedin.com>').noise).toBe(true);
+    expect(c('Welcome To SEEK', 'SEEK Welcome <noreply@seek.com.au>').noise).toBe(true);
+    const buildathon = c('Build Your Next Big Thing at Acme Labs x Cloud Startup Buildathon India 2026', 'GDG Gurugram <noreply@emails.commudle.com>', 'Shortlisted teams will be invited to pitch.');
+    expect(buildathon).toMatchObject({ category: 'other', suggestedStage: '', important: false });
+    const promo = c('Agentic AI in the Tender247 bid management system', 'Bid Automation <info@project247.co.in>', "Watch our founder's interview on agentic AI for bidding.");
+    expect(promo).toMatchObject({ category: 'other', suggestedStage: '' });
+    // A real interview invite still counts.
+    expect(c('Interview invitation – Software Engineer Intern', 'Kestrel Talent <talent@kestrel.com>', 'Your interview is on 2 December at 3:30 PM.').suggestedStage).toBe('interviewing');
+  });
+
   it("ignores InternIQ's own digest emails, even from the student's own address", () => {
     const digest = classifyMail(
       mail({

@@ -535,6 +535,63 @@ describe('Gmail', () => {
     expect((await s.ok('bootstrap')).gmail).toBeNull();
   });
 
+  it('tidies up applications that earlier versions read wrongly from email, once', async () => {
+    const s = await boot();
+    await s.ok('bootstrap');
+    // Reset the one-time flag, as for an account created before the classifier improved.
+    await s.sql(`delete from public.user_kv where user_id = $1 and key = 'mail.repair'`, [s.userId]);
+    const unstop = ['Unstop', 'noreply@emails.unstop.com'];
+    const mails: [string, string, string, string, string, string][] = [
+      ['a1a1a1a1', 'Your Application for Data Science Internship at Acmeflow successfully submitted', unstop[0]!, unstop[1]!, 'applied', '2026-11-10T10:00:00Z'],
+      ['b2b2b2b2', 'Northwind Recruitment Process: Download your Admit Card NOW!', 'donotreply.campus', 'donotreply@email.campus.northwind.com', 'assessment', '2026-11-11T10:00:00Z'],
+      ['c3c3c3c3', 'Fwd: Northwind Recruitment Process: Download your Admit Card NOW!', 'Asha K', s.email, 'assessment', '2026-11-12T10:00:00Z'],
+      ['d4d4d4d4', 'Hiring now: new opportunities at Gedu Services and others', 'Internshala', 'student@internshala.com', 'eligible', '2026-11-13T10:00:00Z'],
+      ['e5e5e5e5', 'Finish your application for the Web Development Internship role at Cobalt.store', unstop[0]!, unstop[1]!, 'applied', '2026-11-14T10:00:00Z'],
+      ['f6f6f6f6', 'Hiring now: new opportunities at Keepco and others', 'Internshala', 'student@internshala.com', 'eligible', '2026-11-15T10:00:00Z'],
+    ];
+    for (const [id, subject, fromName, from, category, at] of mails) {
+      await s.sql(
+        `insert into public.mail_items (user_id, id, subject, from_name, sender, category, area, status, received_at, snippet, job_id) values ($1, $2, $3, $4, $5, $6, 'internships', 'new', $7, '', $8)`,
+        [s.userId, id, subject, fromName, from, category, at, 'j_' + id],
+      );
+    }
+    const jobs: [string, string, string, string, string][] = [
+      ['a1a1a1a1', 'Acmeflow successfully submitted', 'Data Science Internship', 'applied', '2026-11-10T10:00:00Z'],
+      ['b2b2b2b2', 'donotreply.campus', 'Northwind Recruitment Process: Download your Admit Card NOW!', 'interviewing', '2026-11-11T10:00:00Z'],
+      ['c3c3c3c3', 'Asha K', 'Fwd: Northwind Recruitment Process: Download your Admit Card NOW!', 'interviewing', '2026-11-12T10:00:00Z'],
+      ['d4d4d4d4', 'Gedu Services and others', 'Hiring now: new opportunities at Gedu Services and others', 'saved', '2026-11-13T10:00:00Z'],
+      ['e5e5e5e5', 'Cobalt', 'Web Development Internship', 'applied', '2026-11-14T10:00:00Z'],
+      ['f6f6f6f6', 'Keepco and others', 'Hiring now: new opportunities at Keepco and others', 'saved', '2026-11-15T10:00:00Z'],
+    ];
+    for (const [ref, company, role, stage, at] of jobs) {
+      await s.sql(
+        `insert into public.jobs (user_id, id, company, role, stage, source, source_label, source_ref, created_at, updated_at) values ($1, $2, $3, $4, $5, 'manual', 'From email', $6, $7, $7)`,
+        [s.userId, 'j_' + ref, company, role, stage, ref, at],
+      );
+    }
+    await s.sql(`insert into public.tasks (user_id, id, title, due, area, source, mail_id) values ($1, 't_d4d4d4d4', 'Register: Gedu Services', '2026-12-01', 'internships', 'mail', 'd4d4d4d4')`, [s.userId]);
+    // The student wrote a note on the Keepco card, so it is theirs now and stays as it is.
+    await s.sql(`insert into public.activity (user_id, id, job_id, type, message) values ($1, 'a_note00001', 'j_f6f6f6f6', 'note', 'Notes updated')`, [s.userId]);
+
+    const data = await s.ok('bootstrap');
+    const byId = Object.fromEntries(data.jobs.map((j: any) => [j.id, j]));
+    expect(byId['j_a1a1a1a1']).toMatchObject({ company: 'Acmeflow', role: 'Data Science Internship', stage: 'applied' });
+    expect(byId['j_b2b2b2b2']).toMatchObject({ company: 'Northwind', role: 'Northwind Recruitment Process: Download your Admit Card NOW!' });
+    expect(byId['j_c3c3c3c3']).toBeUndefined();
+    expect(byId['j_d4d4d4d4']).toBeUndefined();
+    expect(byId['j_e5e5e5e5']).toMatchObject({ stage: 'saved' });
+    expect(byId['j_f6f6f6f6']).toMatchObject({ company: 'Keepco and others' });
+    const mailById = Object.fromEntries(data.mail.map((m: any) => [m.id, m]));
+    expect(mailById['c3c3c3c3'].jobId).toBe('j_b2b2b2b2');
+    expect(mailById['d4d4d4d4']).toMatchObject({ status: 'ignored', jobId: '' });
+    expect(data.tasks.some((t: any) => t.id === 't_d4d4d4d4')).toBe(false);
+    expect((await s.ok('getActivity', 50)).activity.some((a: any) => /Email tidy-up/.test(a.message))).toBe(true);
+
+    // It runs once: renaming a card afterwards is never undone.
+    await s.ok('updateJob', 'j_a1a1a1a1', { company: 'Acmeflow Inc' });
+    expect((await s.ok('bootstrap')).jobs.find((j: any) => j.id === 'j_a1a1a1a1').company).toBe('Acmeflow Inc');
+  });
+
   it('reports a cancelled consent screen back to the app', async () => {
     const s = await boot();
     const { url } = await s.ok('connectGmail');

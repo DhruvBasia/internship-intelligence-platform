@@ -40,16 +40,18 @@ export function DueBadge({ job }: { job: Pick<JobSummary, 'deadline' | 'deadline
       </span>
     );
   }
+  // Once you have applied, a past application deadline no longer matters.
+  const progressed = job.stage === 'applied' || job.stage === 'interviewing' || job.stage === 'offer';
   if (job.deadline && active) {
     const n = daysUntil(job.deadline);
-    if (n < -30) return null;
+    if (n < -30 || (progressed && n < 0)) return null;
     return (
       <span class={`badge ${n < 0 ? 'weak' : n <= 7 ? 'flag' : ''}`} title="Application deadline">
         <CalendarClock size={12} /> Due {dueLabel(job.deadline)}
       </span>
     );
   }
-  if (job.deadlineText && active && !/^(varies|tba|tbd|n\/?a|open|-)$/i.test(job.deadlineText.trim())) return <span class="tag">Deadline {job.deadlineText}</span>;
+  if (job.deadlineText && active && !progressed && !/^(varies|tba|tbd|n\/?a|open|-)$/i.test(job.deadlineText.trim())) return <span class="tag">Deadline {job.deadlineText}</span>;
   return null;
 }
 
