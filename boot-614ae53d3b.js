@@ -1,5 +1,14 @@
 /* Shows startup errors on screen instead of a spinner that never ends. Loaded before the app. */
 (function () {
+  // Apply the saved theme before first paint (dark unless the student chose otherwise), so the start screen does not flash.
+  try {
+    var t = JSON.parse(localStorage.getItem('iip.themeV2') || '"dark"');
+    if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+})();
+(function () {
   function show(msg) {
     if (window.__IIP_STARTED__) return;
     var el = document.getElementById('app');
