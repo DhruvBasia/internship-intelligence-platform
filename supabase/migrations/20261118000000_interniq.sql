@@ -292,6 +292,9 @@ end $$;
 -- Least privilege: the browser never needs anonymous table access, and signed-in users
 -- may only change the profile fields that are theirs to change (not email or blocked).
 revoke all on all tables in schema public from anon, authenticated;
+-- The server's service role must work whatever the project's default grants are.
+grant usage on schema public to service_role;
+grant select, insert, update, delete on all tables in schema public to service_role;
 grant select, insert, update, delete on public.user_kv, public.jobs, public.job_texts, public.cover_letters,
   public.activity, public.programs, public.exams, public.tasks, public.mail_items to authenticated;
 grant select on public.profiles to authenticated;
