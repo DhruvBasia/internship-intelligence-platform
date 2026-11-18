@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>InternIQ · Privacy policy</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="legal.css" />
+  </head>
+  <body>
+    <main>
+      <p><a href="./">← InternIQ</a></p>
+      <h1>Privacy policy</h1>
+      <p class="muted">Last updated 18 November 2026. InternIQ is run by Dhruv Basia (“we”) at <a href="https://dhruvbasia.github.io/internship-intelligence-platform/">https://dhruvbasia.github.io/internship-intelligence-platform/</a>.</p>
+
+      <p>InternIQ is a free tracker that helps students find internships, track applications, plan higher studies and follow government exams. This page explains what data InternIQ handles, why, and how you control it.</p>
+
+      <h2>What we collect</h2>
+      <ul>
+        <li><strong>Your Google account basics</strong> when you sign in: your name, email address and profile picture. We use them to create and identify your account.</li>
+        <li><strong>What you enter</strong>: your profile (college, degree, graduation year, skills, target roles, locations, résumé text, links), the jobs, programmes, exams and tasks you track, notes, and cover letters.</li>
+        <li><strong>AI keys you choose to add</strong> (for example a Google Gemini or Groq key). They are encrypted on our server and never shown to anyone, including you after saving.</li>
+        <li><strong>Gmail extracts, only if you connect Gmail</strong> (see below).</li>
+        <li><strong>Basic technical records</strong>: when your account was created and last used, and server logs needed to keep the service running and secure. We do not use advertising or analytics trackers.</li>
+      </ul>
+
+      <h2>Gmail (optional, read-only)</h2>
+      <p>If you choose “Connect Gmail”, you grant InternIQ the <code>gmail.readonly</code> permission. InternIQ then searches your inbox for placement, application, admissions, exam and deadline emails, and for each relevant email stores only: the sender, subject, date, a short extract (up to 300 characters), the category it detected (for example “interview” or “rejected”), and any deadline it found. Full email bodies are read in memory to find dates and are not stored. InternIQ cannot send, delete, label or change emails.</p>
+      <p>Your Gmail access token is encrypted on our server. You can disconnect at any time in Settings → Mail, or by removing InternIQ from your Google Account’s third-party access page; either stops all access.</p>
+      <p><strong>Limited Use.</strong> InternIQ’s use and transfer of information received from Google APIs to any other app will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. Specifically: Gmail data is used only to provide the inbox-tracking features you see in InternIQ; it is not used for advertising, not sold, not used to train AI models, and not read by people, except with your explicit consent for a specific message, when needed for security purposes, or to comply with the law.</p>
+
+      <h2>How your data is used</h2>
+      <ul>
+        <li>To show you matching internships, your pipeline, calendar and reminders.</li>
+        <li>To run the background refresh and inbox scan you switch on.</li>
+        <li>If you add your own AI key, the job descriptions and profile details you choose to analyse are sent to that AI provider under your key, and their terms apply to that request. Contact details are removed from your résumé text before it is sent.</li>
+      </ul>
+      <p>We never sell your data, never show ads, and never share your data with anyone except the service providers that run InternIQ: Supabase (database, sign-in and server functions) and GitHub Pages (hosting this website).</p>
+
+      <h2>Who can see your data</h2>
+      <p>Your account can only read its own data; the database enforces this on every request. The person who runs InternIQ can see account-level numbers on an owner dashboard (email, name, college, sign-up and last-active dates, how many jobs you track and whether Gmail is connected) to keep the service healthy and stop abuse. The owner dashboard does not show your jobs, notes, emails or keys.</p>
+
+      <h2>Retention and deletion</h2>
+      <ul>
+        <li>Untouched postings in Discover are deleted automatically after about 30 days.</li>
+        <li>Download everything at any time in Settings → Account &amp; data.</li>
+        <li>Delete your account in Settings → Account &amp; data. This immediately and permanently deletes your account and all its data, and revokes Gmail access.</li>
+        <li>Accounts unused for a long time may be deleted after an email notice.</li>
+      </ul>
+
+      <h2>Security</h2>
+      <p>Traffic is encrypted (HTTPS). AI keys and Gmail tokens are encrypted at rest with a key held only by the server. Access to each account’s data is restricted to that account by row-level security in the database.</p>
+
+      <h2>Children</h2>
+      <p>InternIQ is meant for college students and is not directed at children under 13.</p>
+
+      <h2>Changes and contact</h2>
+      <p>If this policy changes, we will update the date above and, for significant changes, show a notice in the app. Questions or requests: open an issue at <a href="https://github.com/DhruvBasia/internship-intelligence-platform/issues">github.com/DhruvBasia/internship-intelligence-platform</a>.</p>
+    </main>
+  </body>
+</html>
