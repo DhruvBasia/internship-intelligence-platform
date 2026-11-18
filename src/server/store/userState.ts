@@ -1,32 +1,33 @@
 /**
- * Per-user settings, profile, secrets and usage counters, all in that user's
- * PropertiesService.getUserProperties(): fast to read, private to the user,
- * and never sent to the browser in raw form (secrets become presence flags).
+ * Per-user settings, profile, secrets and usage counters. Profile and settings
+ * live in public.profiles, small state in public.user_kv, and AI keys encrypted
+ * in public.user_secrets (never sent to the browser: they become presence flags).
  */
 import { DEFAULT_PROFILE, DEFAULT_SETTINGS, mergeSettings, normalizeProfile } from '../../shared/defaults';
-import type { AiProvider, DeepPartial, Profile, RefreshReport, Settings, SettingsView, UsageView } from '../../shared/types';
-import { getChunked, localDayHour, props, setChunked } from '../gas';
+import type { AiProvider, DeepPartial, Degree, Profile, RefreshReport, Settings, SettingsView, UsageView, WorkMode } from '../../shared/types';
+import { ctx } from '../platform/context';
+import { encryptText } from '../platform/crypto';
+import { localDayHour, props } from '../runtime';
 
 const K = {
-  settings: 'iip.settings',
-  profile: 'iip.profile',
-  resume: 'iip.resume',
-  usage: 'iip.usage',
-  cooldown: 'iip.ai.cooldownUntil',
-  lastRefresh: 'iip.lastRefresh',
-  lastDigest: 'iip.lastDigestAt',
-  v1Migrated: 'iip.v1migrated',
-  modelCache: 'iip.ai.models',
-  secret: (p: Exclude<AiProvider, 'none'>) => 'iip.secret.' + p,
+  usage: 'usage',
+  cooldown: 'ai.cooldownUntil',
+  lastRefresh: 'lastRefresh',
+  lastDigest: 'lastDigestAt',
+  modelCache: 'ai.models',
 };
 
+const secretName = (p: Exclude<AiProvider, 'none'>) => 'ai.' + p;
+
 export function getSettings(): Settings {
-  return mergeSettings(DEFAULT_SETTINGS, props.getJson<DeepPartial<Settings>>(K.settings, {}));
+  return mergeSettings(DEFAULT_SETTINGS, (ctx().profile.settings ?? {}) as DeepPartial<Settings>);
 }
 
 export function saveSettings(patch: DeepPartial<Settings>): Settings {
   const next = mergeSettings(getSettings(), patch);
-  props.setJson(K.settings, next);
+  const c = ctx();
+  c.profile.settings = next as unknown as Record<string, unknown>;
+  c.profileDirty = true;
   return next;
 }
 
@@ -38,28 +39,61 @@ export function settingsView(settings: Settings = getSettings()): SettingsView {
 }
 
 export function getProfile(): Profile {
-  const stored = props.getJson<Partial<Profile>>(K.profile, {});
-  return normalizeProfile({ ...DEFAULT_PROFILE, ...stored, resumeText: getChunked(K.resume) });
+  const p = ctx().profile;
+  return normalizeProfile({
+    ...DEFAULT_PROFILE,
+    name: p.name,
+    school: p.school,
+    degree: p.degree as Degree,
+    gradYear: p.grad_year,
+    skills: p.skills ?? [],
+    targetRoles: p.target_roles ?? [],
+    locations: p.locations ?? [],
+    workModes: (p.work_modes ?? []) as WorkMode[],
+    needsSponsorship: p.needs_sponsorship,
+    resumeText: p.resume_text,
+    links: { ...DEFAULT_PROFILE.links, ...(p.links ?? {}) },
+  });
 }
 
 export function saveProfile(input: Partial<Profile>): Profile {
   const profile = normalizeProfile(input);
-  const { resumeText, ...rest } = profile;
-  props.setJson(K.profile, rest);
-  setChunked(K.resume, resumeText);
+  const c = ctx();
+  Object.assign(c.profile, {
+    name: profile.name,
+    school: profile.school,
+    degree: profile.degree,
+    grad_year: profile.gradYear,
+    skills: profile.skills,
+    target_roles: profile.targetRoles,
+    locations: profile.locations,
+    work_modes: profile.workModes,
+    needs_sponsorship: profile.needsSponsorship,
+    resume_text: profile.resumeText,
+    links: profile.links,
+  });
+  c.profileDirty = true;
   return profile;
 }
 
 export function getSecret(provider: Exclude<AiProvider, 'none'>): string {
-  return (props.get(K.secret(provider)) || '').trim();
+  return (ctx().secrets.get(secretName(provider)) ?? '').trim();
 }
 
-export function setSecret(provider: Exclude<AiProvider, 'none'>, key: string): void {
-  props.set(K.secret(provider), key.trim());
+export async function setSecret(provider: Exclude<AiProvider, 'none'>, key: string): Promise<void> {
+  const c = ctx();
+  const ciphertext = await encryptText(c.env.secretsKey, key.trim());
+  await c.service.upsert('user_secrets', [{ user_id: c.userId, name: secretName(provider), ciphertext, updated_at: new Date().toISOString() }], ['user_id', 'name']);
+  c.secrets.set(secretName(provider), key.trim());
 }
 
-export function clearSecret(provider: Exclude<AiProvider, 'none'>): void {
-  props.del(K.secret(provider));
+export async function clearSecret(provider: Exclude<AiProvider, 'none'>): Promise<void> {
+  const c = ctx();
+  await c.service.delete('user_secrets', [
+    { col: 'user_id', op: 'eq', value: c.userId },
+    { col: 'name', op: 'eq', value: secretName(provider) },
+  ]);
+  c.secrets.delete(secretName(provider));
 }
 
 // ---------------------------------------------------------------------------
@@ -121,14 +155,6 @@ export function getLastDigestAt(): string {
 
 export function setLastDigestAt(iso: string): void {
   props.set(K.lastDigest, iso);
-}
-
-export function getV1Migrated(): number {
-  return Number(props.get(K.v1Migrated) || 0);
-}
-
-export function setV1Migrated(count: number): void {
-  props.set(K.v1Migrated, String(count));
 }
 
 export function getModelCache(provider: AiProvider): { at: number; models: { id: string; label: string }[] } | null {

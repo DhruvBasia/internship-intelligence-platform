@@ -2,7 +2,7 @@ import { LIMITS } from '../../shared/defaults';
 import { detectWorkMode, scoreLocally } from '../../shared/match';
 import { canonicalUrl, collapseWhitespace, roleKey, safeHttpUrl, truncate } from '../../shared/text';
 import type { ActivityEntry, ActivityType, Job, JobSummary, MatchResult, Profile, SourceKind, Stage } from '../../shared/types';
-import { uuid } from '../gas';
+import { uuid } from '../runtime';
 import { ACTIVITY, DOCS, JOB_TEXT, JOBS, queueActivity, table, type DocRow, type JobRow, type JobTextRow } from './db';
 
 /** A posting as produced by a source adapter, before it becomes a tracked job. */
@@ -133,9 +133,9 @@ export class DedupeIndex {
 }
 
 /** Insert raw postings that are not already tracked. Returns the inserted rows. */
-export function insertRawJobs(raws: RawJob[], profile: Profile, opts: { stage?: Stage; activity?: ActivityType } = {}): JobRow[] {
+export async function insertRawJobs(raws: RawJob[], profile: Profile, opts: { stage?: Stage; activity?: ActivityType } = {}): Promise<JobRow[]> {
   const jobs = jobsTable();
-  const index = new DedupeIndex(jobs.all());
+  const index = new DedupeIndex(await jobs.all());
   const rows: JobRow[] = [];
   const texts: JobTextRow[] = [];
   for (const raw of raws) {
@@ -148,34 +148,29 @@ export function insertRawJobs(raws: RawJob[], profile: Profile, opts: { stage?: 
     texts.push(built.text);
   }
   if (rows.length) {
-    jobs.insert(rows);
-    textTable().insert(texts);
+    await jobs.insert(rows);
+    await textTable().insert(texts);
     if (rows.length <= 25) rows.forEach((r) => logActivity(r.id, opts.activity ?? 'discovered', `${r.role} at ${r.company}`));
     else logActivity('', opts.activity ?? 'discovered', `${rows.length} new postings added`);
   }
   return rows;
 }
 
-export function getTexts(ids: string[]): Map<string, JobTextRow> {
-  const t = textTable();
-  const out = new Map<string, JobTextRow>();
-  ids.forEach((id) => {
-    const row = t.get(id);
-    if (row) out.set(id, row);
-  });
-  return out;
+export function getTexts(ids: string[]): Promise<Map<string, JobTextRow>> {
+  return textTable().getMany(ids);
 }
 
 /** Recompute free scores for every job (fast, no network). Keeps AI results unless stale. */
-export function rescoreAllLocally(profile: Profile, hash: string): { rows: JobRow[]; staleAi: number } {
+export async function rescoreAllLocally(profile: Profile, hash: string): Promise<{ rows: JobRow[]; staleAi: number }> {
   const jobs = jobsTable();
   const texts = textTable();
-  const rows = jobs.all();
+  const rows = await jobs.all();
+  const textMap = await texts.getMany(rows.map((r) => r.id));
   const updatedRows: JobRow[] = [];
   const updatedTexts: JobTextRow[] = [];
   let staleAi = 0;
   for (const row of rows) {
-    const text = texts.get(row.id);
+    const text = textMap.get(row.id);
     const local = scoreLocally(
       {
         company: row.company,
@@ -198,9 +193,9 @@ export function rescoreAllLocally(profile: Profile, hash: string): { rows: JobRo
       aiStatus = 'none';
     }
     updatedRows.push({ ...row, match, score: match.score, aiStatus, updatedAt: new Date().toISOString() });
-    updatedTexts.push({ id: row.id, description: text?.description ?? '', requirements: text?.requirements ?? '', local });
+    updatedTexts.push({ id: row.id, description: text?.description ?? '', requirements: text?.requirements ?? '', local, enrichedAt: text?.enrichedAt ?? '' });
   }
-  jobs.update(updatedRows);
-  texts.upsert(updatedTexts);
-  return { rows: jobs.all(), staleAi };
+  await jobs.update(updatedRows);
+  await texts.upsert(updatedTexts);
+  return { rows: await jobs.all(), staleAi };
 }

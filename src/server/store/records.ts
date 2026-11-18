@@ -6,9 +6,10 @@
 import { ABROAD_INTERNSHIPS } from '../catalog/abroadInternships';
 import { EXAM_CATALOG, EXAM_CATALOG_DATE, type CatalogExam } from '../catalog/exams';
 import { STUDY_CATALOG, STUDY_CATALOG_DATE, type CatalogRow } from '../catalog/studies';
-import { PERSONAL } from '../flags';
-import { props } from '../gas';
+import { getPersonalSeed, type PersonalSeed } from '../flags';
 import { log } from '../log';
+import { ctx } from '../platform/context';
+import { props } from '../runtime';
 import { collapseWhitespace, safeHttpUrl, toDay, truncate } from '../../shared/text';
 import type { Area, Exam, Funding, MailItem, Program, Task } from '../../shared/types';
 import { EXAMS, MAIL, PROGRAMS, TASKS, table } from './db';
@@ -21,9 +22,15 @@ export const tasksTable = () => table<Task>(TASKS);
 export const mailTable = () => table<MailItem>(MAIL);
 
 const FUNDINGS: Funding[] = ['full', 'free', 'part', 'fee', 'none'];
-const PROP_CATALOG = 'iip.catalogVersion';
-const PROP_PERSONAL = 'iip.personalSeed';
+const PROP_CATALOG = 'catalogVersion';
+const PROP_PERSONAL = 'personalSeed';
 const CATALOG_VERSION = `${STUDY_CATALOG_DATE}|${EXAM_CATALOG_DATE}|${STUDY_CATALOG.length}|${EXAM_CATALOG.length}`;
+
+/** The deployer's private seed, only ever for the deployer's own account. */
+function personalSeed(): PersonalSeed | null {
+  const seed = getPersonalSeed();
+  return seed && ctx().isOwner ? seed : null;
+}
 
 function programFacts(row: CatalogRow): Pick<Program, 'key' | 'region' | 'name' | 'org' | 'url' | 'deadlineText' | 'deadline' | 'confirmed' | 'funding' | 'money' | 'requirements'> {
   const [key, region, name, org, url, deadlineText, deadline, confirmed, funding, money, requirements] = row;
@@ -51,22 +58,27 @@ function sameFacts(a: object, b: object): boolean {
   return Object.entries(b).every(([k, v]) => JSON.stringify((a as Record<string, unknown>)[k]) === JSON.stringify(v));
 }
 
+export function catalogsCurrent(): boolean {
+  return props.get(PROP_CATALOG) === CATALOG_VERSION;
+}
+
 /**
  * Insert new catalogue entries and refresh facts on existing catalogue rows.
  * Cheap no-op when the catalogue version has not changed. Caller holds the lock.
  */
-export function syncCatalogs(force = false): { added: number } {
-  if (!force && props.get(PROP_CATALOG) === CATALOG_VERSION) return { added: 0 };
+export async function syncCatalogs(force = false): Promise<{ added: number }> {
+  if (!force && catalogsCurrent()) return { added: 0 };
+  const seed = personalSeed();
   const now = new Date().toISOString();
   let added = 0;
 
   const pt = programsTable();
-  const byKey = new Map(pt.all().map((p) => [p.key, p]));
+  const byKey = new Map((await pt.all()).map((p) => [p.key, p]));
   const fresh: Program[] = [];
   const changed: Program[] = [];
   for (const row of STUDY_CATALOG) {
     const facts = programFacts(row);
-    const rating = PERSONAL?.ratings?.[facts.key];
+    const rating = seed?.ratings?.[facts.key];
     const existing = byKey.get(facts.key);
     if (!existing) {
       fresh.push({
@@ -74,7 +86,7 @@ export function syncCatalogs(force = false): { added: number } {
         ...facts,
         fit: rating?.fit ?? '',
         note: rating?.note ?? '',
-        stage: PERSONAL?.programStages?.[facts.key] ?? 'shortlisted',
+        stage: seed?.programStages?.[facts.key] ?? 'shortlisted',
         starred: false,
         docs: {},
         myNotes: '',
@@ -86,12 +98,12 @@ export function syncCatalogs(force = false): { added: number } {
       changed.push({ ...existing, ...facts, updatedAt: now });
     }
   }
-  pt.insert(fresh);
-  pt.update(changed);
+  await pt.insert(fresh);
+  await pt.update(changed);
   added += fresh.length;
 
   const et = examsTable();
-  const examsByKey = new Map(et.all().map((e) => [e.key, e]));
+  const examsByKey = new Map((await et.all()).map((e) => [e.key, e]));
   const newExams: Exam[] = [];
   const changedExams: Exam[] = [];
   for (const c of EXAM_CATALOG) {
@@ -113,8 +125,8 @@ export function syncCatalogs(force = false): { added: number } {
       changedExams.push({ ...existing, ...facts, updatedAt: now });
     }
   }
-  et.insert(newExams);
-  et.update(changedExams);
+  await et.insert(newExams);
+  await et.update(changedExams);
   added += newExams.length;
 
   props.set(PROP_CATALOG, CATALOG_VERSION);
@@ -122,24 +134,14 @@ export function syncCatalogs(force = false): { added: number } {
   return { added };
 }
 
-/**
- * True when this user's workspace needs no first-run work (sheet, schema,
- * catalogues, personal seed). Reads only user properties, so it is instant.
- */
-export function workspaceReady(schemaVersion: string): boolean {
-  if (!props.get('SPREADSHEET_ID') || props.get('iip.schema') !== schemaVersion) return false;
-  if (props.get(PROP_CATALOG) !== CATALOG_VERSION) return false;
-  if (PERSONAL && Number(props.get(PROP_PERSONAL) || 0) < PERSONAL.version) return false;
-  return true;
-}
-
 /** Funded research internships abroad, as importable job postings. */
 export function abroadInternshipRaws(): RawJob[] {
+  const seed = personalSeed();
   return ABROAD_INTERNSHIPS.map((row) => {
     const f = programFacts(row);
     const comma = f.name.lastIndexOf(',');
     const company = comma > 0 ? f.name.slice(comma + 1).trim() : f.name.replace(/\s*\(.*\)$/, '');
-    const rating = PERSONAL?.ratings?.[f.key];
+    const rating = seed?.ratings?.[f.key];
     return {
       source: 'import',
       sourceLabel: 'Research internships abroad',
@@ -161,16 +163,17 @@ export function abroadInternshipRaws(): RawJob[] {
 }
 
 /** One-time import of the deployer's private seed (profile, roadmap tasks, abroad internships). Caller holds the lock. */
-export function applyPersonalSeedOnce(): boolean {
-  if (!PERSONAL || Number(props.get(PROP_PERSONAL) || 0) >= PERSONAL.version) return false;
+export async function applyPersonalSeedOnce(): Promise<boolean> {
+  const seed = personalSeed();
+  if (!seed || Number(props.get(PROP_PERSONAL) || 0) >= seed.version) return false;
   const current = getProfile();
-  if (PERSONAL.profile && !current.skills.length && !current.resumeText) {
-    saveProfile({ ...current, ...PERSONAL.profile });
+  if (seed.profile && !current.skills.length && !current.resumeText) {
+    saveProfile({ ...current, ...seed.profile });
   }
   const now = new Date().toISOString();
   const tt = tasksTable();
-  const existingTitles = new Set(tt.all().map((t) => t.title));
-  const tasks: Task[] = (PERSONAL.tasks ?? [])
+  const existingTitles = new Set((await tt.all()).map((t) => t.title));
+  const tasks: Task[] = (seed.tasks ?? [])
     .filter((t) => t.title && !existingTitles.has(t.title))
     .map((t) => ({
       id: newId('t_'),
@@ -188,9 +191,9 @@ export function applyPersonalSeedOnce(): boolean {
       createdAt: now,
       updatedAt: now,
     }));
-  tt.insert(tasks);
-  insertRawJobs(abroadInternshipRaws(), getProfile(), { activity: 'import' });
-  props.set(PROP_PERSONAL, String(PERSONAL.version));
+  await tt.insert(tasks);
+  await insertRawJobs(abroadInternshipRaws(), getProfile(), { activity: 'import' });
+  props.set(PROP_PERSONAL, String(seed.version));
   log.info('personal.seeded', { tasks: tasks.length });
   return true;
 }

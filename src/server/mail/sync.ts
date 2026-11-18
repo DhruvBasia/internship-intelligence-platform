@@ -1,20 +1,24 @@
 /**
- * Gmail scan (read-only, via the Gmail advanced service) → classify → store,
- * then optionally track applications and create dated tasks. Mirrors the
- * Placement Tracker routine, but runs inside the user's own account.
+ * Gmail scan (read-only) → classify → store, then optionally track applications
+ * and create dated tasks. Only the extracted facts are stored (subject, sender,
+ * a short snippet, dates); full bodies are read in memory and discarded.
  */
 import { htmlToText, roleKey, truncate } from '../../shared/text';
 import type { JobSummary, MailItem, MailReport, Stage, Task } from '../../shared/types';
 import { AppError, errorMessage } from '../errors';
-import { FEATURES } from '../flags';
-import { currentUserEmail, props, withUserLock } from '../gas';
+import { features } from '../flags';
 import { log } from '../log';
+import { ctx } from '../platform/context';
+import { fromB64Url } from '../platform/crypto';
+import { pool } from '../platform/http';
 import type { Deadline } from '../pipeline';
+import { currentUserEmail, props, withUserLock } from '../runtime';
 import { dropTableCache, type JobRow } from '../store/db';
 import { insertRawJobs, jobsTable, logActivity, toSummary } from '../store/jobs';
 import { mailTable, newTask, tasksTable } from '../store/records';
 import { getProfile, getSettings } from '../store/userState';
 import { classifyMail, companyKey, mailQueries, type Classification, type RawMail } from './classify';
+import { gmailGet } from './gmail';
 
 interface GmailPart {
   mimeType?: string;
@@ -29,21 +33,14 @@ interface GmailMessage {
   internalDate?: string;
   payload?: GmailPart;
 }
-interface GmailService {
-  Users: {
-    Messages: {
-      list(userId: string, opts: { q: string; maxResults: number }): { messages?: { id: string; threadId: string }[] };
-      get(userId: string, id: string, opts: { format: string }): GmailMessage;
-    };
-  };
-}
-declare const Gmail: GmailService | undefined;
 
-const PROP_LAST = 'iip.mail.lastScan';
+const PROP_LAST = 'mail.lastScan';
 
 export function mailStatus(): { ok: boolean; reason: string } {
-  if (!FEATURES.mail) return { ok: false, reason: 'Email scanning is not included in this deployment. Deploy the personal build to enable it.' };
-  if (typeof Gmail === 'undefined') return { ok: false, reason: 'The Gmail service is not enabled for this Apps Script project. Redeploy with the personal build.' };
+  if (!features().mail) return { ok: false, reason: 'Gmail tracking is not set up on this InternIQ server yet.' };
+  const g = ctx().gmail;
+  if (!g) return { ok: false, reason: 'Connect Gmail first (Mail → Connect Gmail).' };
+  if (g.status !== 'active') return { ok: false, reason: 'Gmail access was removed. Reconnect Gmail in the Mail tab.' };
   return { ok: true, reason: '' };
 }
 
@@ -53,7 +50,7 @@ export function getLastMailScan(): MailReport | null {
 
 function decode(data: string): string {
   try {
-    return Utilities.newBlob(Utilities.base64DecodeWebSafe(data)).getDataAsString('UTF-8');
+    return new TextDecoder('utf-8').decode(fromB64Url(data));
   } catch {
     return '';
   }
@@ -113,7 +110,7 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export function scanMail(opts: { deadline: Deadline }): { report: MailReport; jobs: JobSummary[] } {
+export async function scanMail(opts: { deadline: Deadline }): Promise<{ report: MailReport; jobs: JobSummary[] }> {
   const status = mailStatus();
   if (!status.ok) throw new AppError('BAD_INPUT', status.reason);
   const settings = getSettings();
@@ -124,24 +121,27 @@ export function scanMail(opts: { deadline: Deadline }): { report: MailReport; jo
   const ids = new Map<string, string>();
   try {
     for (const q of mailQueries(days, settings.mail.extraSenders)) {
-      const res = Gmail!.Users.Messages.list('me', { q, maxResults: last ? 25 : 60 });
+      const params = new URLSearchParams({ q, maxResults: String(last ? 25 : 60) });
+      const res = await gmailGet<{ messages?: { id: string; threadId: string }[] }>(`messages?${params}`);
       for (const m of res.messages ?? []) ids.set(m.id, m.threadId);
     }
   } catch (e) {
+    if (e instanceof AppError) throw e;
     throw new AppError('FETCH_FAILED', 'Could not search Gmail: ' + errorMessage(e).slice(0, 160));
   }
   report.scanned = ids.size;
-  const known = new Set(mailTable().all().map((m) => m.id));
+  const known = new Set((await mailTable().getMany(Array.from(ids.keys()))).keys());
   const fresh = Array.from(ids.keys()).filter((id) => !known.has(id)).slice(0, last ? 60 : 150);
 
   const items: { raw: RawMail; cls: Classification }[] = [];
-  for (const id of fresh) {
+  let stopped = false;
+  await pool(fresh, 5, async (id) => {
     if (Date.now() > opts.deadline.at - 15_000) {
-      report.error = 'Stopped early to stay within the Apps Script time limit; the rest will be read next scan.';
-      break;
+      stopped = true;
+      return;
     }
     try {
-      const msg = Gmail!.Users.Messages.get('me', id, { format: 'full' });
+      const msg = await gmailGet<GmailMessage>(`messages/${encodeURIComponent(id)}?format=full`);
       const raw: RawMail = {
         id: msg.id,
         threadId: msg.threadId,
@@ -155,17 +155,18 @@ export function scanMail(opts: { deadline: Deadline }): { report: MailReport; jo
     } catch (e) {
       log.warn('mail.get_failed', { message: errorMessage(e).slice(0, 200) });
     }
-  }
+  });
+  if (stopped) report.error = 'Stopped early to stay within the time limit; the rest will be read next scan.';
 
-  const email = currentUserEmail();
+  const email = ctx().gmail?.email || currentUserEmail();
   const touchedJobs: JobRow[] = [];
-  withUserLock(() => {
+  await withUserLock(async () => {
     dropTableCache();
     const mt = mailTable();
     const tt = tasksTable();
     const jt = jobsTable();
-    const existingIds = new Set(mt.all().map((m) => m.id));
-    const taskMailIds = new Set(tt.all().map((t) => t.mailId).filter(Boolean));
+    const existingIds = new Set((await mt.getMany(items.map((i) => i.raw.id))).keys());
+    const taskMailIds = new Set((await tt.all()).map((t) => t.mailId).filter(Boolean));
     const newMail: MailItem[] = [];
     const newTasks: Task[] = [];
     // Oldest first so later emails (e.g. a rejection after an interview) win.
@@ -197,7 +198,7 @@ export function scanMail(opts: { deadline: Deadline }): { report: MailReport; jo
       if (cls.important) report.important++;
 
       if (!cls.noise && settings.mail.autoTrack && cls.area === 'internships' && cls.company && cls.suggestedStage) {
-        const rows = jt.all();
+        const rows = await jt.all();
         const job = findJob(rows, cls.company, cls.role);
         if (job) {
           item.jobId = job.id;
@@ -211,13 +212,13 @@ export function scanMail(opts: { deadline: Deadline }): { report: MailReport; jo
               notes: truncate(`${job.notes ? job.notes + '\n' : ''}${raw.date.slice(0, 10)} email: ${raw.subject}`, 10_000),
               updatedAt: now,
             };
-            jt.update([next]);
+            await jt.update([next]);
             touchedJobs.push(next);
             report.jobsUpdated++;
             logActivity(job.id, 'stage', `From email: ${job.role} at ${job.company} → ${cls.suggestedStage}`);
           }
         } else if (cls.suggestedStage !== 'rejected') {
-          const created = insertRawJobs(
+          const created = await insertRawJobs(
             [
               {
                 source: 'manual',
@@ -268,9 +269,9 @@ export function scanMail(opts: { deadline: Deadline }): { report: MailReport; jo
       }
       newMail.push(item);
     }
-    mt.insert(newMail);
-    tt.insert(newTasks);
-    mt.trim(2500, 500);
+    await mt.insert(newMail);
+    await tt.insert(newTasks);
+    if (newMail.length) await mt.trim(2500);
     report.added = newMail.length;
   });
   props.setJson(PROP_LAST, report);

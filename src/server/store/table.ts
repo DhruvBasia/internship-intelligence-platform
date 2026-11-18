@@ -1,275 +1,231 @@
 /**
- * A small, header-mapped table layer over a Google Sheet.
+ * A small typed table layer over Postgres.
  *
- * - Columns are located by header name, so users can reorder columns or add
- *   their own without breaking anything (unknown columns are preserved).
- * - Each request reads a sheet at most once; writes are batched into as few
- *   setValues() calls as possible.
- * - Every text value is guarded against formula injection: scraped text that
- *   starts with "=", "+", "-" or "@" would otherwise run as a formula (e.g.
- *   =IMPORTXML could leak data when the sheet is opened).
+ * - App objects use camelCase keys; columns are snake_case (or an explicit name).
+ * - Every query is scoped to the current user's id, on top of row-level security.
+ * - Each request reads a table at most once when it needs all rows; single-row
+ *   reads hit the database directly until then. Writes go straight through.
  */
-type Sheet = GoogleAppsScript.Spreadsheet.Sheet;
-type Spreadsheet = GoogleAppsScript.Spreadsheet.Spreadsheet;
+import { ctx } from '../platform/context';
+import type { Filter, Row } from '../platform/db';
 
 export type ColType = 'string' | 'number' | 'bool' | 'json' | 'date';
 
 export interface Column {
   key: string;
   type: ColType;
+  /** Column name when it differs from snake_case(key). */
+  column?: string;
+  /** Value stored for null/undefined JSON (for NOT NULL json columns). */
+  empty?: unknown;
 }
 
 export interface TableDef {
+  /** Table name in the public schema. */
   name: string;
   columns: Column[];
+  /** Key whose column orders all() (insertion order matters to some views). */
+  orderBy: string;
 }
 
-const MAX_CELL = 49_000;
-const BULK_REWRITE_THRESHOLD = 12;
+const snake = (k: string) => k.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase());
+export const columnName = (c: Column) => c.column ?? snake(c.key);
 
-function guardText(s: string): string {
-  const t = s.length > MAX_CELL ? s.slice(0, MAX_CELL) : s;
-  // A leading apostrophe forces the cell to text: it blocks formulas
-  // (=, +, -, @) and stops Sheets coercing values such as "Jan 1", "50%",
-  // "$5", "9:00", "TRUE" or ids into dates/numbers. Sheets hides the
-  // apostrophe and getValues() returns the original string.
-  return t === '' ? '' : "'" + t;
-}
-
-export function toCell(value: unknown, type: ColType): unknown {
-  switch (type) {
+function toDb(value: unknown, col: Column): unknown {
+  switch (col.type) {
     case 'number': {
       const n = typeof value === 'number' ? value : Number(value);
-      return Number.isFinite(n) ? n : 0;
+      return Number.isFinite(n) ? Math.round(n) : 0;
     }
     case 'bool':
       return value === true;
     case 'json':
-      return value === null || value === undefined ? '' : guardText(JSON.stringify(value));
+      return value === null || value === undefined ? (col.empty ?? null) : value;
+    case 'date': {
+      if (value === null || value === undefined || value === '') return null;
+      const t = Date.parse(String(value));
+      return Number.isFinite(t) ? new Date(t).toISOString() : null;
+    }
     default:
-      return value === null || value === undefined ? '' : guardText(String(value));
+      return value === null || value === undefined ? '' : String(value);
   }
 }
 
-export function fromCell(value: unknown, type: ColType): unknown {
-  switch (type) {
+function fromDb(value: unknown, col: Column): unknown {
+  switch (col.type) {
     case 'number': {
       const n = typeof value === 'number' ? value : Number(value);
       return Number.isFinite(n) ? n : 0;
     }
     case 'bool':
-      return value === true || String(value).toLowerCase() === 'true';
-    case 'json': {
-      if (value === '' || value === null || value === undefined) return null;
-      try {
-        return JSON.parse(String(value));
-      } catch {
-        return null;
+      return value === true || value === 'true' || value === 't';
+    case 'json':
+      if (value === null || value === undefined || value === '') return col.empty ?? null;
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return col.empty ?? null;
+        }
       }
+      return value;
+    case 'date': {
+      if (value === null || value === undefined || value === '') return '';
+      const d = value instanceof Date ? value : new Date(String(value));
+      return Number.isNaN(d.getTime()) ? '' : d.toISOString();
     }
     default:
-      if (value instanceof Date) return Number.isNaN(value.getTime()) ? '' : value.toISOString();
       return value === null || value === undefined ? '' : String(value);
   }
 }
 
-/** Create the sheet if needed and append any missing header columns. */
-export function ensureTable(ss: Spreadsheet, def: TableDef): Sheet {
-  let sheet = ss.getSheetByName(def.name);
-  if (!sheet) sheet = ss.insertSheet(def.name);
-  const lastCol = sheet.getLastColumn();
-  const headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0]!.map((h) => String(h).trim()) : [];
-  const missing = def.columns.map((c) => c.key).filter((k) => !headers.includes(k));
-  if (missing.length) {
-    const need = headers.length + missing.length;
-    const maxCols = sheet.getMaxColumns();
-    if (maxCols < need) sheet.insertColumnsAfter(maxCols, need - maxCols);
-    sheet.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]).setFontWeight('bold');
-    sheet.setFrozenRows(1);
-  }
-  return sheet;
-}
-
-interface RawRow {
-  rowNum: number;
-  values: unknown[];
-}
-
 export class Table<T extends { id: string }> {
-  private headers: string[] = [];
-  private rows: RawRow[] = [];
-  private parsed: T[] | null = null;
-  private index: Map<string, number> | null = null;
-  private loaded = false;
-  private readonly colIndex = new Map<string, number>();
+  private rows: T[] | null = null;
+  private byId: Map<string, T> | null = null;
+  private readonly orderCol: string;
 
-  constructor(
-    private readonly sheet: Sheet,
-    private readonly def: TableDef,
-  ) {}
-
-  private load(): void {
-    if (this.loaded) return;
-    this.loaded = true;
-    const lastRow = this.sheet.getLastRow();
-    const lastCol = this.sheet.getLastColumn();
-    if (lastRow < 1 || lastCol < 1) {
-      this.headers = [];
-      this.rows = [];
-    } else {
-      const values = this.sheet.getRange(1, 1, lastRow, lastCol).getValues();
-      this.headers = values[0]!.map((h) => String(h).trim());
-      this.rows = [];
-      for (let i = 1; i < values.length; i++) {
-        const row = values[i]!;
-        if (row.every((c) => c === '' || c === null)) continue;
-        this.rows.push({ rowNum: i + 1, values: row });
-      }
-    }
-    this.colIndex.clear();
-    for (const col of this.def.columns) {
-      const idx = this.headers.indexOf(col.key);
-      if (idx >= 0) this.colIndex.set(col.key, idx);
-    }
+  constructor(readonly def: TableDef) {
+    const col = def.columns.find((c) => c.key === def.orderBy);
+    this.orderCol = col ? columnName(col) : 'id';
   }
 
-  private parse(values: unknown[]): T {
-    const out: Record<string, unknown> = {};
-    for (const col of this.def.columns) {
-      const idx = this.colIndex.get(col.key);
-      out[col.key] = fromCell(idx === undefined ? '' : values[idx], col.type);
-    }
-    return out as T;
-  }
-
-  private serialize(item: T, base: unknown[]): unknown[] {
-    const row = base.slice();
-    while (row.length < this.headers.length) row.push('');
-    for (const col of this.def.columns) {
-      const idx = this.colIndex.get(col.key);
-      if (idx !== undefined) row[idx] = toCell((item as Record<string, unknown>)[col.key], col.type);
-    }
+  toRow(item: T): Row {
+    const row: Row = { user_id: ctx().userId };
+    for (const col of this.def.columns) row[columnName(col)] = toDb((item as Record<string, unknown>)[col.key], col);
     return row;
   }
 
-  all(): T[] {
-    this.load();
-    if (!this.parsed) this.parsed = this.rows.map((r) => this.parse(r.values));
-    return this.parsed;
+  fromRow(row: Row): T {
+    const out: Record<string, unknown> = {};
+    for (const col of this.def.columns) out[col.key] = fromDb(row[columnName(col)], col);
+    return out as T;
   }
 
-  private ids(): Map<string, number> {
-    if (!this.index) {
-      this.index = new Map();
-      this.all().forEach((item, i) => this.index!.set(item.id, i));
+  private scope(extra: Filter[] = []): Filter[] {
+    return [{ col: 'user_id', op: 'eq', value: ctx().userId }, ...extra];
+  }
+
+  /** Every row, oldest first by the table's order column. */
+  async all(): Promise<T[]> {
+    if (!this.rows) {
+      const raw = await ctx().db.select(this.def.name, { filters: this.scope(), order: [{ col: this.orderCol }, { col: 'id' }] });
+      this.rows = raw.map((r) => this.fromRow(r));
+      this.byId = new Map(this.rows.map((r) => [r.id, r]));
     }
-    return this.index;
+    return this.rows;
   }
 
-  get(id: string): T | undefined {
-    const i = this.ids().get(id);
-    return i === undefined ? undefined : this.all()[i];
+  async get(id: string): Promise<T | undefined> {
+    if (this.byId) return this.byId.get(id);
+    const raw = await ctx().db.select(this.def.name, { filters: this.scope([{ col: 'id', op: 'eq', value: id }]), limit: 1 });
+    return raw[0] ? this.fromRow(raw[0]) : undefined;
   }
 
-  has(id: string): boolean {
-    return this.ids().has(id);
+  async getMany(ids: string[]): Promise<Map<string, T>> {
+    const out = new Map<string, T>();
+    const unique = Array.from(new Set(ids)).filter(Boolean);
+    if (!unique.length) return out;
+    if (this.byId) {
+      for (const id of unique) {
+        const r = this.byId.get(id);
+        if (r) out.set(id, r);
+      }
+      return out;
+    }
+    const raw = await ctx().db.select(this.def.name, { filters: this.scope([{ col: 'id', op: 'in', value: unique }]) });
+    for (const r of raw) {
+      const item = this.fromRow(r);
+      out.set(item.id, item);
+    }
+    return out;
   }
 
-  insert(items: T[]): void {
+  async has(id: string): Promise<boolean> {
+    return (await this.get(id)) !== undefined;
+  }
+
+  /** Newest rows by the order column, without loading the whole table. */
+  async latest(limit: number, extra: Filter[] = []): Promise<T[]> {
+    if (this.rows && !extra.length) return this.rows.slice(-limit).reverse();
+    const raw = await ctx().db.select(this.def.name, {
+      filters: this.scope(extra),
+      order: [{ col: this.orderCol, desc: true }, { col: 'id', desc: true }],
+      limit,
+    });
+    return raw.map((r) => this.fromRow(r));
+  }
+
+  async insert(items: T[]): Promise<void> {
     if (!items.length) return;
-    this.load();
-    const width = Math.max(this.headers.length, 1);
-    const values = items.map((item) => this.serialize(item, new Array(width).fill('')));
-    const start = this.sheet.getLastRow() + 1;
-    const needRows = start + values.length - 1;
-    const maxRows = this.sheet.getMaxRows();
-    if (needRows > maxRows) this.sheet.insertRowsAfter(maxRows, needRows - maxRows);
-    this.sheet.getRange(start, 1, values.length, width).setValues(values);
-    values.forEach((v, i) => this.rows.push({ rowNum: start + i, values: v }));
-    if (this.parsed) {
-      items.forEach((item) => {
-        this.ids().set(item.id, this.parsed!.length);
-        this.parsed!.push({ ...item });
-      });
+    await ctx().db.insert(this.def.name, items.map((i) => this.toRow(i)));
+    if (this.rows) {
+      for (const item of items) {
+        const copy = { ...item };
+        this.rows.push(copy);
+        this.byId!.set(copy.id, copy);
+      }
     }
   }
 
-  update(items: T[]): void {
+  /** Update existing rows (rows deleted meanwhile are skipped when the table is loaded). */
+  async update(items: T[]): Promise<void> {
+    const list = this.byId ? items.filter((i) => this.byId!.has(i.id)) : items;
+    if (!list.length) return;
+    await ctx().db.upsert(this.def.name, list.map((i) => this.toRow(i)), ['user_id', 'id']);
+    this.remember(list);
+  }
+
+  async upsert(items: T[]): Promise<void> {
     if (!items.length) return;
-    this.all();
-    const positions: number[] = [];
+    await ctx().db.upsert(this.def.name, items.map((i) => this.toRow(i)), ['user_id', 'id']);
+    this.remember(items);
+  }
+
+  private remember(items: T[]): void {
+    if (!this.rows) return;
     for (const item of items) {
-      const i = this.ids().get(item.id);
-      if (i === undefined) continue;
-      const raw = this.rows[i]!;
-      raw.values = this.serialize(item, raw.values);
-      this.parsed![i] = { ...item };
-      positions.push(i);
-    }
-    if (!positions.length) return;
-    const width = this.headers.length;
-    if (positions.length >= BULK_REWRITE_THRESHOLD) {
-      // One write covering the span of touched rows is far cheaper than many small ones.
-      const first = Math.min(...positions.map((p) => this.rows[p]!.rowNum));
-      const last = Math.max(...positions.map((p) => this.rows[p]!.rowNum));
-      const block: unknown[][] = Array.from({ length: last - first + 1 }, () => new Array(width).fill(''));
-      for (const r of this.rows) {
-        if (r.rowNum >= first && r.rowNum <= last) block[r.rowNum - first] = r.values.slice(0, width);
-      }
-      this.sheet.getRange(first, 1, block.length, width).setValues(block);
-    } else {
-      for (const p of positions) {
-        const r = this.rows[p]!;
-        this.sheet.getRange(r.rowNum, 1, 1, width).setValues([r.values.slice(0, width)]);
-      }
+      const copy = { ...item };
+      const existing = this.byId!.get(item.id);
+      if (existing) this.rows[this.rows.indexOf(existing)] = copy;
+      else this.rows.push(copy);
+      this.byId!.set(item.id, copy);
     }
   }
 
-  upsert(items: T[]): void {
-    const existing = items.filter((i) => this.has(i.id));
-    const fresh = items.filter((i) => !this.has(i.id));
-    this.update(existing);
-    this.insert(fresh);
-  }
-
-  remove(ids: string[]): string[] {
-    this.all();
-    const doomed = new Set(ids.filter((id) => this.has(id)));
-    if (!doomed.size) return [];
-    const keep = this.rows.filter((_, i) => !doomed.has(this.parsed![i]!.id));
-    const width = this.headers.length;
-    // Sheets refuses to delete every non-frozen row, so emptying a table always rewrites.
-    if (doomed.size >= BULK_REWRITE_THRESHOLD || keep.length === 0) {
-      const lastRow = this.sheet.getLastRow();
-      if (lastRow > 1) this.sheet.getRange(2, 1, lastRow - 1, width).clearContent();
-      if (keep.length) this.sheet.getRange(2, 1, keep.length, width).setValues(keep.map((r) => r.values.slice(0, width)));
-    } else {
-      const rowNums = this.rows.filter((_, i) => doomed.has(this.parsed![i]!.id)).map((r) => r.rowNum);
-      rowNums.sort((a, b) => b - a).forEach((n) => this.sheet.deleteRow(n));
+  /** Delete by id; returns the ids that existed. */
+  async remove(ids: string[]): Promise<string[]> {
+    const unique = Array.from(new Set(ids)).filter(Boolean);
+    if (!unique.length) return [];
+    const deleted = await ctx().db.delete(this.def.name, this.scope([{ col: 'id', op: 'in', value: unique }]), ['id']);
+    const gone = new Set(deleted.map((r) => String(r.id)));
+    if (this.rows) {
+      this.rows = this.rows.filter((r) => !gone.has(r.id));
+      gone.forEach((id) => this.byId!.delete(id));
     }
-    this.loaded = false;
-    this.parsed = null;
-    this.index = null;
-    return Array.from(doomed);
+    return Array.from(gone);
   }
 
-  /** Delete the oldest data rows when a log-style table grows past maxRows. */
-  trim(maxRows: number, dropCount: number): void {
-    const lastRow = this.sheet.getLastRow();
-    if (lastRow - 1 > maxRows) {
-      this.sheet.deleteRows(2, Math.min(dropCount, lastRow - 2));
-      this.loaded = false;
-      this.parsed = null;
-      this.index = null;
-    }
+  /** Keep only the newest maxRows rows (log-style tables). */
+  async trim(maxRows: number): Promise<void> {
+    const extra = await ctx().db.select(this.def.name, {
+      filters: this.scope(),
+      columns: ['id'],
+      order: [{ col: this.orderCol, desc: true }, { col: 'id', desc: true }],
+      offset: maxRows,
+      limit: 1000,
+    });
+    if (extra.length) await this.remove(extra.map((r) => String(r.id)));
   }
 
-  clear(): void {
-    const lastRow = this.sheet.getLastRow();
-    const lastCol = this.sheet.getLastColumn();
-    if (lastRow > 1 && lastCol > 0) this.sheet.getRange(2, 1, lastRow - 1, lastCol).clearContent();
-    this.loaded = false;
-    this.parsed = null;
-    this.index = null;
+  async clear(): Promise<void> {
+    await ctx().db.delete(this.def.name, this.scope());
+    this.rows = [];
+    this.byId = new Map();
+  }
+
+  /** Forget cached rows so the next read sees changes made by other requests. */
+  forget(): void {
+    this.rows = null;
+    this.byId = null;
   }
 }

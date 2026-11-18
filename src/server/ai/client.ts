@@ -8,20 +8,21 @@
 import { safeHttpUrl, urlHost } from '../../shared/text';
 import type { AiProvider, ModelInfo, Settings } from '../../shared/types';
 import { AppError } from '../errors';
-import { httpFetch, sleep, type HttpResponse } from '../gas';
 import { log } from '../log';
+import { httpFetch, sleep, type HttpResponse } from '../runtime';
 import { getModelCache, getSecret, saveSettings, setCooldown, setModelCache } from '../store/userState';
 import { extractJson } from './prompts';
 
 export interface AiClient {
   provider: Exclude<AiProvider, 'none'>;
   model: string;
-  json(system: string, user: string, schema: object): unknown;
-  text(system: string, user: string): string;
+  json(system: string, user: string, schema: object): Promise<unknown>;
+  text(system: string, user: string): Promise<string>;
 }
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const GEMINI_FALLBACK_MODEL = 'gemini-flash-latest';
+const AI_TIMEOUT_MS = 60_000;
 
 /** Parse provider error bodies into a user-facing AppError, and set a cooldown on quota errors. */
 function providerError(provider: string, res: HttpResponse): AppError {
@@ -63,11 +64,13 @@ function providerError(provider: string, res: HttpResponse): AppError {
 }
 
 /** POST with one retry on transient 5xx / network errors. */
-function postJson(url: string, headers: Record<string, string>, body: unknown): HttpResponse {
-  let res = httpFetch({ url, method: 'post', headers, body: JSON.stringify(body) });
+async function postJson(url: string, headers: Record<string, string>, body: unknown): Promise<HttpResponse> {
+  const req = { url, method: 'post' as const, headers, body: JSON.stringify(body), timeoutMs: AI_TIMEOUT_MS, maxBytes: 4_000_000 };
+  let res = await httpFetch(req);
   if (res.status >= 500 || res.status === 0) {
-    sleep(1500);
-    res = httpFetch({ url, method: 'post', headers, body: JSON.stringify(body) });
+    if (res.error.startsWith('Blocked')) return res;
+    await sleep(1500);
+    res = await httpFetch(req);
   }
   return res;
 }
@@ -102,8 +105,8 @@ export function rankGeminiModels(models: GeminiModel[]): ModelInfo[] {
     .slice(0, 25);
 }
 
-export function listGeminiModels(key: string): ModelInfo[] {
-  const res = httpFetch({ url: `${GEMINI_BASE}/models?pageSize=200`, headers: { 'x-goog-api-key': key } });
+export async function listGeminiModels(key: string): Promise<ModelInfo[]> {
+  const res = await httpFetch({ url: `${GEMINI_BASE}/models?pageSize=200`, headers: { 'x-goog-api-key': key } });
   if (res.status !== 200) throw providerError('Gemini', res);
   const body = JSON.parse(res.text) as { models?: GeminiModel[] };
   return rankGeminiModels(body.models ?? []);
@@ -112,7 +115,7 @@ export function listGeminiModels(key: string): ModelInfo[] {
 function geminiClient(key: string, configuredModel: string): AiClient {
   let model = configuredModel || getModelCache('gemini')?.models[0]?.id || GEMINI_FALLBACK_MODEL;
 
-  const call = (system: string, user: string, schema: object | null): string => {
+  const call = async (system: string, user: string, schema: object | null): Promise<string> => {
     const body: Record<string, unknown> = {
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: user }] }],
@@ -121,16 +124,16 @@ function geminiClient(key: string, configuredModel: string): AiClient {
         : { temperature: 0.6 },
     };
     const send = () => postJson(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`, { 'x-goog-api-key': key }, body);
-    let res = send();
+    let res = await send();
     if (res.status === 404) {
       // The configured model was retired: switch to the best currently available one, once.
-      const models = listGeminiModels(key);
+      const models = await listGeminiModels(key);
       setModelCache('gemini', models);
       if (models[0] && models[0].id !== model) {
         log.warn('ai.model_switched', { from: model, to: models[0].id });
         model = models[0].id;
         saveSettings({ ai: { model } });
-        res = send();
+        res = await send();
       }
     }
     if (res.status !== 200) throw providerError('Gemini', res);
@@ -153,8 +156,8 @@ function geminiClient(key: string, configuredModel: string): AiClient {
     get model() {
       return model;
     },
-    json: (system, user, schema) => extractJson(call(system, user, schema)),
-    text: (system, user) => call(system, user, null).trim(),
+    json: async (system, user, schema) => extractJson(await call(system, user, schema)),
+    text: async (system, user) => (await call(system, user, null)).trim(),
   };
 }
 
@@ -184,8 +187,8 @@ export function rankCompatModels(baseUrl: string, models: CompatModel[]): ModelI
     .slice(0, 40);
 }
 
-export function listCompatModels(baseUrl: string, key: string): ModelInfo[] {
-  const res = httpFetch({ url: `${baseUrl}/models`, headers: { Authorization: `Bearer ${key}` } });
+export async function listCompatModels(baseUrl: string, key: string): Promise<ModelInfo[]> {
+  const res = await httpFetch({ url: `${baseUrl}/models`, headers: { Authorization: `Bearer ${key}` } });
   if (res.status !== 200) throw providerError(providerName(baseUrl), res);
   const body = JSON.parse(res.text) as { data?: CompatModel[] };
   return rankCompatModels(baseUrl, body.data ?? []);
@@ -204,7 +207,7 @@ function compatClient(baseUrl: string, key: string, configuredModel: string): Ai
   if (!model) throw new AppError('AI_NOT_CONFIGURED', `Choose a ${name} model in Settings → AI.`);
   const headers = { Authorization: `Bearer ${key}`, 'X-Title': 'InternIQ' };
 
-  const call = (system: string, user: string, json: boolean): string => {
+  const call = async (system: string, user: string, json: boolean): Promise<string> => {
     const body: Record<string, unknown> = {
       model,
       temperature: json ? 0.2 : 0.6,
@@ -214,10 +217,10 @@ function compatClient(baseUrl: string, key: string, configuredModel: string): Ai
       ],
     };
     if (json) body.response_format = { type: 'json_object' };
-    let res = postJson(`${baseUrl}/chat/completions`, headers, body);
+    let res = await postJson(`${baseUrl}/chat/completions`, headers, body);
     if (json && res.status === 400 && /response_format|json/i.test(res.text)) {
       delete body.response_format;
-      res = postJson(`${baseUrl}/chat/completions`, headers, body);
+      res = await postJson(`${baseUrl}/chat/completions`, headers, body);
     }
     if (res.status !== 200) throw providerError(name, res);
     const data = JSON.parse(res.text) as { choices?: { message?: { content?: string } }[] };
@@ -229,8 +232,8 @@ function compatClient(baseUrl: string, key: string, configuredModel: string): Ai
   return {
     provider: 'openai_compat',
     model,
-    json: (system, user) => extractJson(call(system, user, true)),
-    text: (system, user) => call(system, user, false).trim(),
+    json: async (system, user) => extractJson(await call(system, user, true)),
+    text: async (system, user) => (await call(system, user, false)).trim(),
   };
 }
 
@@ -256,18 +259,18 @@ export function requireClient(settings: Settings): AiClient {
   return client;
 }
 
-export function listModelsFor(settings: Settings, keyOverride?: string): ModelInfo[] {
+export async function listModelsFor(settings: Settings, keyOverride?: string): Promise<ModelInfo[]> {
   const p = settings.ai.provider;
   if (p === 'none') return [];
   const key = keyOverride ?? getSecret(p);
   if (!key) return [];
   let models: ModelInfo[];
   if (p === 'gemini') {
-    models = listGeminiModels(key);
+    models = await listGeminiModels(key);
   } else {
     const base = safeHttpUrl(settings.ai.baseUrl).replace(/\/+$/, '');
     if (!base) throw new AppError('BAD_INPUT', 'Choose a provider (Groq, OpenRouter) or enter its API base URL first.');
-    models = listCompatModels(base, key);
+    models = await listCompatModels(base, key);
   }
   setModelCache(p, models);
   return models;

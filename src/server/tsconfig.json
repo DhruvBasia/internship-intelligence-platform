@@ -1,8 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["es2022"],
-    "types": ["google-apps-script"]
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "types": ["node"]
   },
   "include": ["./**/*.ts", "../shared/**/*.ts"]
 }

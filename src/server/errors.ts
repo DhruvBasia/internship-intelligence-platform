@@ -30,12 +30,11 @@ export function errorMessage(e: unknown): string {
 export function toRpcError(e: unknown, ref: string): RpcError {
   if (e instanceof AppError) return { code: e.code, message: e.message };
   const msg = errorMessage(e);
-  // Apps Script quota / service errors are worth surfacing in plain words.
-  if (/Service invoked too many times|Exceeded maximum execution time|quota/i.test(msg)) {
-    return { code: 'RATE_LIMITED', message: 'Google Apps Script quota reached for now. Please try again later.', ref };
+  if (/JWT expired|invalid JWT|not signed in/i.test(msg)) {
+    return { code: 'UNAUTHENTICATED', message: 'Your session expired. Please sign in again.', ref };
   }
-  if (/Lock timeout|could not obtain lock/i.test(msg)) {
-    return { code: 'BUSY', message: 'Another update is still running. Try again in a few seconds.', ref };
+  if (/Database unreachable|timeout|too many connections|503/i.test(msg)) {
+    return { code: 'BUSY', message: 'The server is busy right now. Please try again in a moment.', ref };
   }
   return { code: 'INTERNAL', message: 'Something went wrong on our side. Please try again.', ref };
 }

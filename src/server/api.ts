@@ -6,34 +6,52 @@ import { APP_VERSION, LIMITS } from '../shared/defaults';
 import { profileHash, scoreLocally } from '../shared/match';
 import { canonicalUrl, roleKey, safeHttpUrl, toDay } from '../shared/text';
 import {
+  DOC_KEYS,
+  EXAM_STAGES,
+  PROGRAM_STAGES,
   STAGES,
   type ActivityEntry,
+  type AdminOverview,
   type AiProvider,
+  type Area,
   type BootstrapData,
   type CoverLetterOptions,
   type DeepPartial,
+  type DocStatus,
+  type Exam,
+  type ExamEvent,
+  type ExamPatch,
+  type GmailInfo,
   type ImportResult,
   type JobInput,
   type JobPatch,
   type JobSummary,
+  type MailAction,
+  type MailItem,
   type Profile,
+  type Program,
+  type ProgramPatch,
   type Settings,
   type Stage,
+  type TaskInput,
+  type TaskPatch,
 } from '../shared/types';
 import { writeCoverLetter } from './ai/analyze';
 import { getClient, listModelsFor, requireClient } from './ai/client';
 import { templateLetter } from './ai/prompts';
-import { syncTriggers } from './automation';
 import { AppError, badInput, notFound } from './errors';
-import { currentUserEmail, props, triggers, withUserLock } from './gas';
+import { features } from './flags';
 import { parseDelimited, rowsToRawJobs } from './importers';
-import { hasV1Data, importFromSheetUrl, migrateV1InPlace } from './migrate';
+import { gmailConnectUrl, gmailDisconnect } from './mail/gmail';
+import { getLastMailScan, scanMail as scanMailNow, shouldAdvance } from './mail/sync';
+import { ctx } from './platform/context';
+import { randomToken } from './platform/crypto';
 import { deadlineIn, processAiQueue, refresh } from './pipeline';
+import { currentUserEmail, httpFetch, withUserLock } from './runtime';
 import { enrichDescriptions, readPosting, resolveBoard as resolveBoardSource } from './sources';
 import { starterPackTsv } from './starterPack';
-import { ACTIVITY, dropTableCache, forgetSpreadsheet, sheetUrl, table, type JobRow } from './store/db';
+import { ALL_TABLES, ACTIVITY, dropTableCache, table, type JobRow } from './store/db';
 import {
-  activityTable,
   assembleJob,
   docsTable,
   getTexts,
@@ -47,26 +65,8 @@ import {
   toSummary,
   type RawJob,
 } from './store/jobs';
+import { applyPersonalSeedOnce, catalogsCurrent, examsTable, mailTable, newTask, programsTable, syncCatalogs, tasksTable } from './store/records';
 import * as user from './store/userState';
-import { FEATURES } from './flags';
-import { getLastMailScan, scanMail as scanMailNow, shouldAdvance } from './mail/sync';
-import { applyPersonalSeedOnce, examsTable, mailTable, newTask, programsTable, syncCatalogs, tasksTable } from './store/records';
-import {
-  DOC_KEYS,
-  EXAM_STAGES,
-  PROGRAM_STAGES,
-  type Area,
-  type DocStatus,
-  type Exam,
-  type ExamEvent,
-  type ExamPatch,
-  type MailAction,
-  type MailItem,
-  type Program,
-  type ProgramPatch,
-  type TaskInput,
-  type TaskPatch,
-} from '../shared/types';
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -118,56 +118,65 @@ function dateOrEmpty(v: unknown, field: string): string {
   return d;
 }
 
-function requireRow(id: string): JobRow {
-  const row = jobsTable().get(id);
+async function requireRow(id: string): Promise<JobRow> {
+  const row = await jobsTable().get(id);
   if (!row) throw notFound('That job');
   return row;
 }
 
-function recentActivity(limit: number, jobFilter?: string): ActivityEntry[] {
-  const all = table<ActivityEntry>(ACTIVITY).all();
-  const out: ActivityEntry[] = [];
-  for (let i = all.length - 1; i >= 0 && out.length < limit; i--) {
-    if (!jobFilter || all[i]!.jobId === jobFilter) out.push(all[i]!);
-  }
-  return out;
+async function recentActivity(limit: number, jobFilter?: string): Promise<ActivityEntry[]> {
+  return table<ActivityEntry>(ACTIVITY).latest(limit, jobFilter ? [{ col: 'job_id', op: 'eq', value: jobFilter }] : []);
 }
 
-const summaries = (): JobSummary[] => jobsTable().all().map(toSummary);
+const summaries = async (): Promise<JobSummary[]> => (await jobsTable().all()).map(toSummary);
+
+function gmailInfo(): GmailInfo | null {
+  const g = ctx().gmail;
+  return g ? { email: g.email, status: g.status, error: g.lastError } : null;
+}
 
 // ---------------------------------------------------------------------------
 // Session
 
-export function bootstrap(): BootstrapData {
-  let migrated = user.getV1Migrated();
-  if (!migrated && hasV1Data()) migrated = withUserLock(() => migrateV1InPlace());
-  withUserLock(() => {
-    syncCatalogs();
-    applyPersonalSeedOnce();
-  });
-  dropTableCache();
+export async function bootstrap(): Promise<BootstrapData> {
+  // First sign-in (or a catalogue update) seeds programmes and exams; later calls skip the lock.
+  if (!catalogsCurrent() || ctx().isOwner) {
+    await withUserLock(async () => {
+      await syncCatalogs();
+      await applyPersonalSeedOnce();
+    }, 60_000);
+    dropTableCache();
+  }
   const settings = user.getSettings();
+  const [programs, exams, tasks, mail, jobs, activity] = await Promise.all([
+    programsTable().all(),
+    examsTable().all(),
+    tasksTable().all(),
+    recentMail(),
+    summaries(),
+    recentActivity(40),
+  ]);
+  const c = ctx();
   return {
-    features: FEATURES,
-    programs: programsTable().all(),
-    exams: examsTable().all(),
-    tasks: tasksTable().all(),
-    mail: recentMail(),
+    features: features(),
+    programs,
+    exams,
+    tasks,
+    mail,
     lastMailScan: getLastMailScan(),
     version: APP_VERSION,
-    user: { email: currentUserEmail() },
+    user: { email: currentUserEmail(), isAdmin: c.isAdmin, since: c.profile.created_at },
     profile: user.getProfile(),
     settings: user.settingsView(settings),
     usage: user.getUsage(settings),
-    jobs: summaries(),
-    activity: recentActivity(40),
-    sheetUrl: sheetUrl(),
+    jobs,
+    activity,
     lastRefresh: user.getLastRefresh(),
-    migratedFromV1: migrated,
+    gmail: gmailInfo(),
   };
 }
 
-export function saveProfile(input: unknown): { profile: Profile; jobs: JobSummary[] } {
+export async function saveProfile(input: unknown): Promise<{ profile: Profile; jobs: JobSummary[] }> {
   const p = plainObject(input, 'Profile') as Partial<Profile>;
   const before = profileHash(user.getProfile());
   if (typeof p.resumeText === 'string' && p.resumeText.length > LIMITS.resumeChars) {
@@ -176,37 +185,35 @@ export function saveProfile(input: unknown): { profile: Profile; jobs: JobSummar
   const profile = user.saveProfile(p);
   const after = profileHash(profile);
   if (before !== after) {
-    withUserLock(() => {
+    await withUserLock(async () => {
       dropTableCache();
-      rescoreAllLocally(profile, after);
+      await rescoreAllLocally(profile, after);
     });
     logActivity('', 'settings', 'Profile updated; free scores recalculated');
   }
-  return { profile, jobs: summaries() };
+  return { profile, jobs: await summaries() };
 }
 
-export function saveSettings(patch: unknown): { settings: ReturnType<typeof user.settingsView> } {
-  const before = user.getSettings();
+export async function saveSettings(patch: unknown): Promise<{ settings: ReturnType<typeof user.settingsView> }> {
   const next = user.saveSettings(plainObject(patch, 'Settings') as DeepPartial<Settings>);
-  if (JSON.stringify([before.automation, before.mail.enabled]) !== JSON.stringify([next.automation, next.mail.enabled])) syncTriggers(next);
   return { settings: user.settingsView(next) };
 }
 
-export function completeOnboarding() {
+export async function completeOnboarding() {
   return { settings: user.settingsView(user.saveSettings({ onboarded: true })) };
 }
 
 // ---------------------------------------------------------------------------
 // AI configuration
 
-export function setSecret(providerArg: unknown, keyArg: unknown) {
+export async function setSecret(providerArg: unknown, keyArg: unknown) {
   const p = provider(providerArg);
   const key = text(keyArg, 'API key', 300, true);
   if (/\s/.test(key) || key.length < 16) throw badInput('That does not look like an API key. Copy it again from the provider.');
   const settings = { ...user.getSettings(), ai: { ...user.getSettings().ai, provider: p } };
   // Listing models proves the key works before we store it.
-  const models = listModelsFor(settings, key);
-  user.setSecret(p, key);
+  const models = await listModelsFor(settings, key);
+  await user.setSecret(p, key);
   const current = user.getSettings();
   const keepModel = current.ai.provider === p && models.some((m) => m.id === current.ai.model);
   const next = user.saveSettings({ ai: { provider: p, model: keepModel ? current.ai.model : models[0]?.id ?? '' } });
@@ -214,68 +221,68 @@ export function setSecret(providerArg: unknown, keyArg: unknown) {
   return { settings: user.settingsView(next), models };
 }
 
-export function clearSecret(providerArg: unknown) {
+export async function clearSecret(providerArg: unknown) {
   const p = provider(providerArg);
-  user.clearSecret(p);
+  await user.clearSecret(p);
   const s = user.getSettings();
   const next = s.ai.provider === p ? user.saveSettings({ ai: { provider: 'none', model: '' } }) : s;
   return { settings: user.settingsView(next) };
 }
 
-export function listModels() {
-  return { models: listModelsFor(user.getSettings()) };
+export async function listModels() {
+  return { models: await listModelsFor(user.getSettings()) };
 }
 
-export function testAi() {
+export async function testAi() {
   const settings = user.getSettings();
   if (user.remainingAiRequests(settings) <= 0) throw new AppError('AI_QUOTA', 'Daily AI limit reached; try again tomorrow.');
   const client = requireClient(settings);
   const t0 = Date.now();
-  client.text('You are a health check. Reply with exactly: OK', 'Ping');
+  await client.text('You are a health check. Reply with exactly: OK', 'Ping');
   user.recordUsage(1, 0, settings);
   return { model: client.model, ms: Date.now() - t0 };
 }
 
-export function getUsage() {
+export async function getUsage() {
   return { usage: user.getUsage() };
 }
 
 // ---------------------------------------------------------------------------
 // Jobs
 
-export function listJobs() {
-  return { jobs: summaries() };
+export async function listJobs() {
+  return { jobs: await summaries() };
 }
 
-export function getJob(idArg: unknown) {
+export async function getJob(idArg: unknown) {
   const id = jobId(idArg);
-  let row = requireRow(id);
-  let jobText = getTexts([id]).get(id);
+  let row = await requireRow(id);
+  let jobText = (await getTexts([id])).get(id);
   // Title-only postings: try once to fetch the full description from the page.
   if (row.url && (jobText?.description ?? '').length < 300 && !jobText?.enrichedAt) {
-    const found = enrichDescriptions([{ id, url: row.url }]).get(id);
+    const found = (await enrichDescriptions([{ id, url: row.url }])).get(id);
     const now = new Date().toISOString();
-    withUserLock(() => {
+    await withUserLock(async () => {
       dropTableCache();
-      const fresh = jobsTable().get(id);
+      const fresh = await jobsTable().get(id);
       if (!fresh) return;
       if (found) {
         const local = scoreLocally({ ...fresh, tags: fresh.tags ?? [], description: found.description, requirements: found.requirements }, user.getProfile());
         const keepAi = fresh.match?.method === 'ai';
         row = { ...fresh, snippet: snippetOf(found.description, found.requirements), match: keepAi ? fresh.match : local, score: keepAi ? fresh.score : local.score };
-        jobsTable().update([row]);
+        await jobsTable().update([row]);
         jobText = { id, description: found.description, requirements: found.requirements, local, enrichedAt: now };
       } else {
         jobText = { id, description: jobText?.description ?? '', requirements: jobText?.requirements ?? '', local: jobText?.local ?? null, enrichedAt: now };
       }
-      textTable().upsert([jobText]);
+      await textTable().upsert([jobText]);
     });
   }
-  const letter = docsTable().get(id)?.coverLetter ?? '';
-  return { job: assembleJob(row, jobText), coverLetter: letter, activity: recentActivity(30, id) };
+  const letter = (await docsTable().get(id))?.coverLetter ?? '';
+  return { job: assembleJob(row, jobText), coverLetter: letter, activity: await recentActivity(30, id) };
 }
 
-export function createJob(inputArg: unknown) {
+export async function createJob(inputArg: unknown) {
   const input = plainObject(inputArg, 'Job') as Partial<JobInput>;
   const url = text(input.url, 'URL', 2000);
   if (url && !safeHttpUrl(url)) throw badInput('The link must start with http:// or https://');
@@ -296,20 +303,20 @@ export function createJob(inputArg: unknown) {
     stage: input.stage === undefined ? 'saved' : stage(input.stage),
     notes: text(input.notes, 'Notes', LIMITS.notesChars),
   };
-  const rows = withUserLock(() => insertRawJobs([raw], user.getProfile(), { activity: 'created' }));
+  const rows = await withUserLock(() => insertRawJobs([raw], user.getProfile(), { activity: 'created' }));
   if (!rows.length) throw new AppError('CONFLICT', `You're already tracking ${raw.role} at ${raw.company}.`);
   return { job: toSummary(rows[0]!) };
 }
 
 const EDITABLE: (keyof JobPatch)[] = ['stage', 'starred', 'notes', 'deadline', 'followUpAt', 'company', 'role', 'location', 'url', 'description', 'requirements'];
 
-export function updateJob(idArg: unknown, patchArg: unknown) {
+export async function updateJob(idArg: unknown, patchArg: unknown) {
   const id = jobId(idArg);
   const patch = plainObject(patchArg, 'Changes') as JobPatch;
   const unknownKeys = Object.keys(patch).filter((k) => !EDITABLE.includes(k as keyof JobPatch));
   if (unknownKeys.length) throw badInput(`Cannot edit: ${unknownKeys.join(', ')}`);
-  return withUserLock(() => {
-    const row = requireRow(id);
+  return withUserLock(async () => {
+    const row = await requireRow(id);
     const now = new Date().toISOString();
     const next: JobRow = { ...row, updatedAt: now };
     if (patch.stage !== undefined) {
@@ -339,7 +346,7 @@ export function updateJob(idArg: unknown, patchArg: unknown) {
     const textChanged = patch.description !== undefined || patch.requirements !== undefined;
     const identityChanged = ['company', 'role', 'location'].some((k) => patch[k as keyof JobPatch] !== undefined);
     if (textChanged || identityChanged) {
-      const current = getTexts([id]).get(id);
+      const current = (await getTexts([id])).get(id);
       const description = patch.description !== undefined ? text(patch.description, 'Description', LIMITS.descriptionChars) : current?.description ?? '';
       const requirements = patch.requirements !== undefined ? text(patch.requirements, 'Requirements', LIMITS.requirementsChars) : current?.requirements ?? '';
       const local = scoreLocally({ ...next, tags: next.tags ?? [], description, requirements }, user.getProfile());
@@ -348,25 +355,30 @@ export function updateJob(idArg: unknown, patchArg: unknown) {
         next.score = local.score;
       }
       next.snippet = snippetOf(description, requirements);
-      textTable().upsert([{ id, description, requirements, local, enrichedAt: current?.enrichedAt ?? '' }]);
+      next.canonicalUrl = canonicalUrl(next.url);
+      next.roleKey = roleKey(next.company, next.role);
+      await jobsTable().update([next]);
+      await textTable().upsert([{ id, description, requirements, local, enrichedAt: current?.enrichedAt ?? '' }]);
+    } else {
+      await jobsTable().update([next]);
     }
-    jobsTable().update([next]);
     if (patch.notes !== undefined && patch.notes !== row.notes) logActivity(id, 'note', 'Notes updated');
     return { job: toSummary(next) };
   });
 }
 
-export function bulkUpdate(idsArg: unknown, patchArg: unknown) {
+export async function bulkUpdate(idsArg: unknown, patchArg: unknown) {
   const ids = jobIds(idsArg);
   const patch = plainObject(patchArg, 'Changes') as JobPatch;
   const newStage = patch.stage === undefined ? undefined : stage(patch.stage);
   const star = patch.starred === undefined ? undefined : patch.starred === true;
   if (newStage === undefined && star === undefined) throw badInput('Nothing to change.');
-  return withUserLock(() => {
+  return withUserLock(async () => {
     const t = jobsTable();
     const now = new Date().toISOString();
+    const found = await t.getMany(ids);
     const updates = ids
-      .map((id) => t.get(id))
+      .map((id) => found.get(id))
       .filter((r): r is JobRow => Boolean(r))
       .map((r) => {
         const next = { ...r, updatedAt: now };
@@ -378,50 +390,48 @@ export function bulkUpdate(idsArg: unknown, patchArg: unknown) {
         if (star !== undefined) next.starred = star;
         return next;
       });
-    t.update(updates);
+    await t.update(updates);
     if (newStage) logActivity('', 'stage', `${updates.length} jobs moved to ${newStage}`);
     return { jobs: updates.map(toSummary) };
   });
 }
 
-export function deleteJobs(idsArg: unknown) {
+export async function deleteJobs(idsArg: unknown) {
   const ids = jobIds(idsArg);
-  return withUserLock(() => {
-    const deleted = jobsTable().remove(ids);
-    textTable().remove(deleted);
-    docsTable().remove(deleted);
+  return withUserLock(async () => {
+    // Job text and cover letters cascade in the database.
+    const deleted = await jobsTable().remove(ids);
     if (deleted.length) logActivity('', 'deleted', `Deleted ${deleted.length} job${deleted.length === 1 ? '' : 's'}`);
     return { deleted };
   });
 }
 
-export function refreshNow() {
-  const report = refresh({ deadline: deadlineIn(170_000), aiBudgetMs: 30_000 });
-  return { report, jobs: summaries(), usage: user.getUsage() };
+export async function refreshNow() {
+  const report = await refresh({ deadline: deadlineIn(110_000), aiBudgetMs: 30_000 });
+  dropTableCache();
+  return { report, jobs: await summaries(), usage: user.getUsage() };
 }
 
-export function addFromUrl(urlArg: unknown) {
+export async function addFromUrl(urlArg: unknown) {
   const url = text(urlArg, 'URL', 2000, true);
-  const raw = readPosting(url);
+  const raw = await readPosting(url);
   if (!raw.role || !raw.company) throw new AppError('FETCH_FAILED', "Couldn't read the job title or company from that page. Add it manually instead.");
   const profile = user.getProfile();
-  const result = withUserLock(() => {
-    const rows = insertRawJobs([{ ...raw, stage: 'saved' }], profile, { activity: 'created' });
+  const result = await withUserLock(async () => {
+    const rows = await insertRawJobs([{ ...raw, stage: 'saved' }], profile, { activity: 'created' });
     if (rows.length) return { row: rows[0]!, duplicate: false };
-    const url = canonicalUrl(raw.url);
+    const canon = canonicalUrl(raw.url);
     const key = roleKey(raw.company, raw.role);
-    const match = jobsTable()
-      .all()
-      .find((r) => (url && r.canonicalUrl === url) || r.roleKey === key);
+    const match = (await jobsTable().all()).find((r) => (canon && r.canonicalUrl === canon) || r.roleKey === key);
     if (!match) throw new AppError('CONFLICT', 'You are already tracking this posting.');
     return { row: match, duplicate: true };
   });
   let row = result.row;
   if (!result.duplicate && getClient(user.getSettings()) && user.remainingAiRequests() > 0) {
     try {
-      processAiQueue({ ids: [row.id], deadline: deadlineIn(45_000) });
+      await processAiQueue({ ids: [row.id], deadline: deadlineIn(45_000) });
       dropTableCache();
-      row = jobsTable().get(row.id) ?? row;
+      row = (await jobsTable().get(row.id)) ?? row;
     } catch {
       /* AI is a bonus here; the job is saved either way */
     }
@@ -429,32 +439,32 @@ export function addFromUrl(urlArg: unknown) {
   return { job: toSummary(row), duplicate: result.duplicate };
 }
 
-export function analyzeWithAi(idsArg: unknown) {
+export async function analyzeWithAi(idsArg: unknown) {
   const ids = jobIds(idsArg, 20);
-  const out = processAiQueue({ ids, deadline: deadlineIn(240_000) });
+  const out = await processAiQueue({ ids, deadline: deadlineIn(110_000) });
   dropTableCache();
-  const t = jobsTable();
-  const jobs = ids.map((id) => t.get(id)).filter((r): r is JobRow => Boolean(r)).map(toSummary);
+  const found = await jobsTable().getMany(ids);
+  const jobs = ids.map((id) => found.get(id)).filter((r): r is JobRow => Boolean(r)).map(toSummary);
   return { jobs, usage: user.getUsage(), error: out.error };
 }
 
-export function rescoreAll() {
+export async function rescoreAll() {
   const profile = user.getProfile();
-  const result = withUserLock(() => {
+  const result = await withUserLock(async () => {
     dropTableCache();
     return rescoreAllLocally(profile, profileHash(profile));
   });
   return { jobs: result.rows.map(toSummary), queued: 0 };
 }
 
-export function generateCoverLetter(idArg: unknown, optionsArg: unknown) {
+export async function generateCoverLetter(idArg: unknown, optionsArg: unknown) {
   const id = jobId(idArg);
   const o = (optionsArg && typeof optionsArg === 'object' ? optionsArg : {}) as Partial<CoverLetterOptions>;
   const options: CoverLetterOptions = {
     tone: o.tone === 'enthusiastic' || o.tone === 'concise' ? o.tone : 'professional',
     length: o.length === 'short' ? 'short' : 'standard',
   };
-  const row = requireRow(id);
+  const row = await requireRow(id);
   const settings = user.getSettings();
   const profile = user.getProfile();
   const client = getClient(settings);
@@ -464,8 +474,8 @@ export function generateCoverLetter(idArg: unknown, optionsArg: unknown) {
     textOut = templateLetter(profile, row, row.match);
   } else {
     if (user.remainingAiRequests(settings) <= 0) throw new AppError('AI_QUOTA', 'Daily AI limit reached. Try again tomorrow, or raise the limit in Settings → AI.');
-    const t = getTexts([id]).get(id);
-    textOut = writeCoverLetter(
+    const t = (await getTexts([id])).get(id);
+    textOut = await writeCoverLetter(
       client,
       profile,
       { id, company: row.company, role: row.role, location: row.location, workMode: row.workMode, tags: row.tags ?? [], description: t?.description ?? '', requirements: t?.requirements ?? '' },
@@ -475,33 +485,33 @@ export function generateCoverLetter(idArg: unknown, optionsArg: unknown) {
     method = 'ai';
     user.recordUsage(1, 0, settings);
   }
-  withUserLock(() => docsTable().upsert([{ id, coverLetter: textOut, updatedAt: new Date().toISOString() }]));
+  await withUserLock(() => docsTable().upsert([{ id, coverLetter: textOut, updatedAt: new Date().toISOString() }]));
   logActivity(id, 'letter', method === 'ai' ? 'Cover letter drafted with AI' : 'Cover letter template created');
   return { text: textOut, method, usage: user.getUsage(settings) };
 }
 
-export function saveCoverLetter(idArg: unknown, textArg: unknown) {
+export async function saveCoverLetter(idArg: unknown, textArg: unknown) {
   const id = jobId(idArg);
   const body = text(textArg, 'Cover letter', LIMITS.coverLetterChars);
-  requireRow(id);
+  await requireRow(id);
   const savedAt = new Date().toISOString();
-  withUserLock(() => docsTable().upsert([{ id, coverLetter: body, updatedAt: savedAt }]));
+  await withUserLock(() => docsTable().upsert([{ id, coverLetter: body, updatedAt: savedAt }]));
   return { savedAt };
 }
 
 // ---------------------------------------------------------------------------
 // Imports
 
-function importRaws(raws: RawJob[], skipped: number, label: string): ImportResult {
-  const rows = withUserLock(() => {
+async function importRaws(raws: RawJob[], skipped: number, label: string): Promise<ImportResult> {
+  const rows = await withUserLock(async () => {
     dropTableCache();
     return insertRawJobs(raws, user.getProfile(), { activity: 'import' });
   });
   logActivity('', 'import', `${label}: ${rows.length} added, ${raws.length - rows.length + skipped} skipped`);
-  return { added: rows.length, skipped: raws.length - rows.length + skipped, jobs: summaries() };
+  return { added: rows.length, skipped: raws.length - rows.length + skipped, jobs: await summaries() };
 }
 
-export function importTsv(textArg: unknown): ImportResult {
+export async function importTsv(textArg: unknown): Promise<ImportResult> {
   const body = text(textArg, 'Import', LIMITS.tsvChars, true);
   let parsed;
   try {
@@ -513,7 +523,7 @@ export function importTsv(textArg: unknown): ImportResult {
   return importRaws(parsed.jobs, parsed.skipped, 'Spreadsheet import');
 }
 
-export function importStarterPack(): ImportResult {
+export async function importStarterPack(): Promise<ImportResult> {
   const parsed = rowsToRawJobs(parseDelimited(starterPackTsv()));
   const raws = parsed.jobs.map((j) => ({
     ...j,
@@ -525,33 +535,82 @@ export function importStarterPack(): ImportResult {
   return importRaws(raws, 0, 'Research programs pack');
 }
 
-export function importFromSheet(urlArg: unknown): ImportResult {
+/** Import a Google Sheet shared as "anyone with the link can view" (read as CSV). */
+export async function importFromSheet(urlArg: unknown): Promise<ImportResult> {
   const url = text(urlArg, 'Sheet URL', 2000, true);
-  return withUserLock(() => importFromSheetUrl(url));
+  const m = /docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9_-]{20,})/.exec(url);
+  if (!m) throw badInput('Paste a Google Sheets link (docs.google.com/spreadsheets/…).');
+  const gid = /[#&?]gid=(\d+)/.exec(url)?.[1];
+  const res = await httpFetch({ url: `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv${gid ? `&gid=${gid}` : ''}`, maxBytes: 5_000_000 });
+  if (res.status !== 200 || /^\s*<(!doctype|html)/i.test(res.text)) {
+    throw new AppError('FETCH_FAILED', 'Could not read that sheet. In Google Sheets choose Share → "Anyone with the link" (Viewer), then try again.');
+  }
+  const parsed = rowsToRawJobs(parseDelimited(res.text));
+  if (parsed.jobs.length > 2000) throw badInput('Import at most 2,000 rows at a time.');
+  return importRaws(parsed.jobs, parsed.skipped, 'Google Sheet import');
 }
 
-export function resolveBoard(inputArg: unknown) {
+export async function resolveBoard(inputArg: unknown) {
   return resolveBoardSource(text(inputArg, 'Company', 300, true));
 }
 
-export function getActivity(limitArg: unknown) {
+export async function getActivity(limitArg: unknown) {
   const limit = Math.max(1, Math.min(500, Number(limitArg) || 100));
-  return { activity: recentActivity(limit) };
+  return { activity: await recentActivity(limit) };
 }
 
-export function deleteAllData(confirmArg: unknown) {
+// ---------------------------------------------------------------------------
+// Your data: export and account deletion
+
+export async function exportData() {
+  const [jobs, programs, exams, tasks, mail, letters, activity] = await Promise.all([
+    jobsTable().all(),
+    programsTable().all(),
+    examsTable().all(),
+    tasksTable().all(),
+    mailTable().all(),
+    docsTable().all(),
+    table<ActivityEntry>(ACTIVITY).latest(1000),
+  ]);
+  const texts = await getTexts(jobs.map((j) => j.id));
+  const { secrets: _s, ...settings } = user.settingsView();
+  return {
+    exportedAt: new Date().toISOString(),
+    app: 'InternIQ',
+    version: APP_VERSION,
+    email: currentUserEmail(),
+    profile: user.getProfile(),
+    settings,
+    jobs: jobs.map((r) => assembleJob(r, texts.get(r.id))),
+    coverLetters: letters,
+    programs,
+    exams,
+    tasks,
+    mail,
+    activity,
+  };
+}
+
+/** Delete the account and every row that belongs to it. */
+export async function deleteAccount(confirmArg: unknown) {
   if (confirmArg !== 'DELETE') throw badInput('Type DELETE to confirm.');
-  const url = sheetUrl();
-  withUserLock(() => {
-    jobsTable().clear();
-    textTable().clear();
-    docsTable().clear();
-    activityTable().clear();
-  });
-  triggers.removeAll('worker');
-  forgetSpreadsheet();
-  props.deleteAll();
-  return { sheetUrl: url };
+  const c = ctx();
+  await gmailDisconnect().catch(() => undefined);
+  // Deleting the auth user cascades to every table (ON DELETE CASCADE).
+  const headers: Record<string, string> = { apikey: c.env.serviceKey };
+  if (c.env.serviceKey.startsWith('eyJ')) headers.Authorization = `Bearer ${c.env.serviceKey}`;
+  const res = await c.fetch(`${c.env.supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(c.userId)}`, { method: 'DELETE', headers });
+  if (!res.ok && res.status !== 404) {
+    // Could not remove the login: at least remove every piece of data.
+    for (const def of ALL_TABLES) await c.service.delete(def.name, [{ col: 'user_id', op: 'eq', value: c.userId }]);
+    for (const t of ['user_kv', 'user_secrets']) await c.service.delete(t, [{ col: 'user_id', op: 'eq', value: c.userId }]);
+  }
+  // Nothing left to write back.
+  c.profileDirty = false;
+  c.kvDirty.clear();
+  c.kvDeleted.clear();
+  c.activity = [];
+  return { deleted: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -611,21 +670,21 @@ function applyProgramPatch(p: Program, patch: ProgramPatch): Program {
   return next;
 }
 
-export function updateProgram(idArg: unknown, patchArg: unknown) {
+export async function updateProgram(idArg: unknown, patchArg: unknown) {
   const id = recordId(idArg, 'p');
   const patch = plainObject(patchArg, 'Changes') as ProgramPatch;
-  return withUserLock(() => {
+  return withUserLock(async () => {
     const t = programsTable();
-    const p = t.get(id);
+    const p = await t.get(id);
     if (!p) throw notFound('That programme');
     const next = applyProgramPatch(p, patch);
-    t.update([next]);
+    await t.update([next]);
     if (patch.stage && patch.stage !== p.stage) logActivity(id, 'stage', `${p.name} → ${patch.stage}`);
     return { program: next };
   });
 }
 
-export function createProgram(inputArg: unknown) {
+export async function createProgram(inputArg: unknown) {
   const input = plainObject(inputArg, 'Programme') as ProgramPatch;
   const now = new Date().toISOString();
   const base: Program = {
@@ -653,14 +712,14 @@ export function createProgram(inputArg: unknown) {
   };
   const program = applyProgramPatch(base, { region: 'Other', ...input });
   if (!program.name) throw badInput('Programme name is required.');
-  withUserLock(() => programsTable().insert([program]));
+  await withUserLock(() => programsTable().insert([program]));
   logActivity(program.id, 'created', `Added programme ${program.name}`);
   return { program };
 }
 
-export function deleteProgram(idArg: unknown) {
+export async function deleteProgram(idArg: unknown) {
   const id = recordId(idArg, 'p');
-  withUserLock(() => programsTable().remove([id]));
+  await withUserLock(() => programsTable().remove([id]));
   return { deleted: id };
 }
 
@@ -701,25 +760,25 @@ function applyExamPatch(x: Exam, patch: ExamPatch): Exam {
   return next;
 }
 
-export function updateExam(idArg: unknown, patchArg: unknown) {
+export async function updateExam(idArg: unknown, patchArg: unknown) {
   const id = recordId(idArg, 'x');
   const patch = plainObject(patchArg, 'Changes') as ExamPatch;
-  return withUserLock(() => {
+  return withUserLock(async () => {
     const t = examsTable();
-    const x = t.get(id);
+    const x = await t.get(id);
     if (!x) throw notFound('That exam');
     // Catalogue exams keep their researched facts; user-added ones are fully editable.
     if (x.source === 'catalog' && (patch.events !== undefined || patch.name !== undefined || patch.body !== undefined)) {
       throw badInput('Catalogue exams update automatically; add your own dates as tasks instead.');
     }
     const next = applyExamPatch(x, patch);
-    t.update([next]);
+    await t.update([next]);
     if (patch.stage && patch.stage !== x.stage) logActivity(id, 'stage', `${x.name} → ${patch.stage}`);
     return { exam: next };
   });
 }
 
-export function createExam(inputArg: unknown) {
+export async function createExam(inputArg: unknown) {
   const input = plainObject(inputArg, 'Exam') as ExamPatch;
   const now = new Date().toISOString();
   const exam = applyExamPatch(
@@ -749,26 +808,26 @@ export function createExam(inputArg: unknown) {
     input,
   );
   if (!exam.name) throw badInput('Exam name is required.');
-  withUserLock(() => examsTable().insert([exam]));
+  await withUserLock(() => examsTable().insert([exam]));
   return { exam };
 }
 
-export function deleteExam(idArg: unknown) {
+export async function deleteExam(idArg: unknown) {
   const id = recordId(idArg, 'x');
-  withUserLock(() => examsTable().remove([id]));
+  await withUserLock(() => examsTable().remove([id]));
   return { deleted: id };
 }
 
-export function refreshCatalogs() {
-  const { added } = withUserLock(() => syncCatalogs(true));
+export async function refreshCatalogs() {
+  const { added } = await withUserLock(() => syncCatalogs(true), 60_000);
   dropTableCache();
-  return { programs: programsTable().all(), exams: examsTable().all(), added };
+  return { programs: await programsTable().all(), exams: await examsTable().all(), added };
 }
 
 // ---------------------------------------------------------------------------
 // Tasks
 
-export function createTask(inputArg: unknown) {
+export async function createTask(inputArg: unknown) {
   const input = plainObject(inputArg, 'Task') as TaskInput;
   const area = AREAS.includes(input.area as Area) ? (input.area as Area) : 'general';
   const link = text(input.link, 'Link', 2000);
@@ -785,16 +844,16 @@ export function createTask(inputArg: unknown) {
     refType,
     refId: refType ? text(input.refId, 'Reference', 40) : '',
   });
-  withUserLock(() => tasksTable().insert([task]));
+  await withUserLock(() => tasksTable().insert([task]));
   return { task };
 }
 
-export function updateTask(idArg: unknown, patchArg: unknown) {
+export async function updateTask(idArg: unknown, patchArg: unknown) {
   const id = recordId(idArg, 't');
   const patch = plainObject(patchArg, 'Changes') as TaskPatch;
-  return withUserLock(() => {
+  return withUserLock(async () => {
     const t = tasksTable();
-    const task = t.get(id);
+    const task = await t.get(id);
     if (!task) throw notFound('That task');
     const next = { ...task, updatedAt: new Date().toISOString() };
     if (patch.title !== undefined) next.title = text(patch.title, 'Task', 200, true);
@@ -810,42 +869,48 @@ export function updateTask(idArg: unknown, patchArg: unknown) {
       if (u && !safeHttpUrl(u)) throw badInput('The link must start with http:// or https://');
       next.link = safeHttpUrl(u);
     }
-    t.update([next]);
+    await t.update([next]);
     return { task: next };
   });
 }
 
-export function deleteTask(idArg: unknown) {
+export async function deleteTask(idArg: unknown) {
   const id = recordId(idArg, 't');
-  withUserLock(() => tasksTable().remove([id]));
+  await withUserLock(() => tasksTable().remove([id]));
   return { deleted: id };
 }
 
 // ---------------------------------------------------------------------------
 // Mail
 
-function recentMail(): MailItem[] {
-  return mailTable()
-    .all()
-    .slice()
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, 300);
+async function recentMail(): Promise<MailItem[]> {
+  return mailTable().latest(300);
 }
 
-export function scanMail() {
-  const out = scanMailNow({ deadline: deadlineIn(240_000) });
+export async function scanMail() {
+  const out = await scanMailNow({ deadline: deadlineIn(110_000) });
   dropTableCache();
-  return { report: out.report, mail: recentMail(), jobs: summaries(), tasks: tasksTable().all() };
+  return { report: out.report, mail: await recentMail(), jobs: await summaries(), tasks: await tasksTable().all() };
 }
 
-export function mailAction(idArg: unknown, actionArg: unknown) {
+export async function connectGmail() {
+  return gmailConnectUrl();
+}
+
+export async function disconnectGmail() {
+  await gmailDisconnect();
+  user.saveSettings({ mail: { enabled: false } });
+  return { gmail: null, settings: user.settingsView() };
+}
+
+export async function mailAction(idArg: unknown, actionArg: unknown) {
   const id = text(idArg, 'Email id', 64, true);
   if (!/^[a-f0-9]{8,32}$/i.test(id)) throw badInput('Invalid email id.');
   const action = String(actionArg) as MailAction;
   if (!['done', 'ignore', 'restore', 'task', 'apply-stage'].includes(action)) throw badInput('Unknown action.');
-  return withUserLock(() => {
+  return withUserLock(async () => {
     const mt = mailTable();
-    const mail = mt.get(id);
+    const mail = await mt.get(id);
     if (!mail) throw notFound('That email');
     let next: MailItem = { ...mail };
     let task = null;
@@ -855,7 +920,7 @@ export function mailAction(idArg: unknown, actionArg: unknown) {
     if (action === 'restore') next.status = 'new';
     if (action === 'task') {
       const tt = tasksTable();
-      const existing = mail.taskId ? tt.get(mail.taskId) : undefined;
+      const existing = mail.taskId ? await tt.get(mail.taskId) : undefined;
       if (existing) task = existing;
       else {
         const fallback = new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 10);
@@ -871,7 +936,7 @@ export function mailAction(idArg: unknown, actionArg: unknown) {
           refId: mail.jobId,
           mailId: mail.id,
         });
-        tt.insert([task]);
+        await tt.insert([task]);
         next = { ...next, taskId: task.id };
       }
       next.status = 'done';
@@ -879,17 +944,17 @@ export function mailAction(idArg: unknown, actionArg: unknown) {
     if (action === 'apply-stage') {
       if (!mail.suggestedStage) throw badInput('This email does not suggest an application stage.');
       const jt = jobsTable();
-      const row = mail.jobId ? jt.get(mail.jobId) : undefined;
+      const row = mail.jobId ? await jt.get(mail.jobId) : undefined;
       if (row) {
         if (shouldAdvance(row.stage, mail.suggestedStage) || row.stage !== mail.suggestedStage) {
           const now = new Date().toISOString();
           const updated = { ...row, stage: mail.suggestedStage, stageChangedAt: now, updatedAt: now };
-          jt.update([updated]);
+          await jt.update([updated]);
           job = toSummary(updated);
           logActivity(row.id, 'stage', `From email: ${row.role} at ${row.company} → ${mail.suggestedStage}`);
         } else job = toSummary(row);
       } else {
-        const created = insertRawJobs(
+        const created = await insertRawJobs(
           [
             {
               source: 'manual',
@@ -919,7 +984,42 @@ export function mailAction(idArg: unknown, actionArg: unknown) {
       }
       next.status = 'done';
     }
-    mt.update([next]);
+    await mt.update([next]);
     return { mail: next, task, job };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Calendar subscription (Google / Apple Calendar)
+
+export async function calendarFeed(rotateArg?: unknown) {
+  const c = ctx();
+  let token = c.profile.ics_token;
+  if (!token || rotateArg === true) {
+    token = randomToken(24);
+    await c.service.update('profiles', { ics_token: token }, [{ col: 'user_id', op: 'eq', value: c.userId }]);
+    c.profile.ics_token = token;
+  }
+  return { url: `${c.env.functionUrl}/ics/${token}.ics` };
+}
+
+// ---------------------------------------------------------------------------
+// Owner dashboard
+
+function requireAdmin(): void {
+  if (!ctx().isAdmin) throw new AppError('FORBIDDEN', 'Only the InternIQ owner can do that.');
+}
+
+export async function adminOverview(): Promise<{ overview: AdminOverview }> {
+  requireAdmin();
+  return { overview: await ctx().service.rpc<AdminOverview>('interniq_admin_overview', {}) };
+}
+
+export async function adminSetBlocked(userIdArg: unknown, blockedArg: unknown) {
+  requireAdmin();
+  const id = text(userIdArg, 'User', 64, true);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw badInput('Invalid user id.');
+  if (id === ctx().userId) throw badInput('You cannot block yourself.');
+  await ctx().service.update('profiles', { blocked: blockedArg === true }, [{ col: 'user_id', op: 'eq', value: id }]);
+  return { userId: id, blocked: blockedArg === true };
 }

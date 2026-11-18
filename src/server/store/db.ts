@@ -1,22 +1,14 @@
 /**
- * Each user's data lives in a spreadsheet in *their own* Google Drive (the web
- * app runs as the user accessing it), so nobody else, including the app
- * owner, can read it. The spreadsheet id is kept in that user's properties.
+ * Table definitions (mirroring supabase/migrations) and per-request access.
+ * Every user's rows live in shared Postgres tables, isolated by user_id and
+ * row-level security.
  */
 import type { ActivityEntry, Job, JobSummary } from '../../shared/types';
-import { props, withUserLock } from '../gas';
 import { log } from '../log';
-import { ensureTable, Table, type TableDef } from './table';
+import { ctx } from '../platform/context';
+import { Table, type TableDef } from './table';
 
-type Spreadsheet = GoogleAppsScript.Spreadsheet.Spreadsheet;
-
-/** Same property name v1 used, so an in-place upgrade finds the user's existing sheet. */
-const PROP_SHEET_ID = 'SPREADSHEET_ID';
-const PROP_SCHEMA = 'iip.schema';
-export const SCHEMA_VERSION = '2.1';
-const SHEET_TITLE = 'InternIQ: my internship tracker';
-
-/** Row shape of the lean "Jobs" sheet, read on almost every request. */
+/** Row shape of the lean jobs table, read on almost every request. */
 export type JobRow = JobSummary & { canonicalUrl: string; roleKey: string };
 
 /** Heavy text lives separately so list views never read it. */
@@ -36,7 +28,8 @@ export interface DocRow {
 }
 
 export const JOBS: TableDef = {
-  name: 'Jobs',
+  name: 'jobs',
+  orderBy: 'createdAt',
   columns: [
     { key: 'id', type: 'string' },
     { key: 'company', type: 'string' },
@@ -50,7 +43,7 @@ export const JOBS: TableDef = {
     { key: 'source', type: 'string' },
     { key: 'sourceLabel', type: 'string' },
     { key: 'sourceRef', type: 'string' },
-    { key: 'tags', type: 'json' },
+    { key: 'tags', type: 'json', empty: [] },
     { key: 'postedAt', type: 'date' },
     { key: 'deadline', type: 'string' },
     { key: 'deadlineText', type: 'string' },
@@ -59,7 +52,7 @@ export const JOBS: TableDef = {
     { key: 'followUpAt', type: 'string' },
     { key: 'notes', type: 'string' },
     { key: 'snippet', type: 'string' },
-    { key: 'match', type: 'json' },
+    { key: 'match', type: 'json', column: 'match_result' },
     { key: 'aiStatus', type: 'string' },
     { key: 'aiError', type: 'string' },
     { key: 'aiAttempts', type: 'number' },
@@ -71,18 +64,20 @@ export const JOBS: TableDef = {
 };
 
 export const JOB_TEXT: TableDef = {
-  name: 'JobText',
+  name: 'job_texts',
+  orderBy: 'id',
   columns: [
     { key: 'id', type: 'string' },
     { key: 'description', type: 'string' },
     { key: 'requirements', type: 'string' },
-    { key: 'local', type: 'json' },
+    { key: 'local', type: 'json', column: 'local_match' },
     { key: 'enrichedAt', type: 'date' },
   ],
 };
 
 export const DOCS: TableDef = {
-  name: 'CoverLetters',
+  name: 'cover_letters',
+  orderBy: 'updatedAt',
   columns: [
     { key: 'id', type: 'string' },
     { key: 'coverLetter', type: 'string' },
@@ -91,7 +86,8 @@ export const DOCS: TableDef = {
 };
 
 export const ACTIVITY: TableDef = {
-  name: 'Activity',
+  name: 'activity',
+  orderBy: 'at',
   columns: [
     { key: 'id', type: 'string' },
     { key: 'at', type: 'date' },
@@ -102,7 +98,8 @@ export const ACTIVITY: TableDef = {
 };
 
 export const PROGRAMS: TableDef = {
-  name: 'Studies',
+  name: 'programs',
+  orderBy: 'createdAt',
   columns: [
     { key: 'id', type: 'string' },
     { key: 'name', type: 'string' },
@@ -120,7 +117,7 @@ export const PROGRAMS: TableDef = {
     { key: 'requirements', type: 'string' },
     { key: 'note', type: 'string' },
     { key: 'myNotes', type: 'string' },
-    { key: 'docs', type: 'json' },
+    { key: 'docs', type: 'json', empty: {} },
     { key: 'key', type: 'string' },
     { key: 'source', type: 'string' },
     { key: 'createdAt', type: 'date' },
@@ -129,7 +126,8 @@ export const PROGRAMS: TableDef = {
 };
 
 export const EXAMS: TableDef = {
-  name: 'Exams',
+  name: 'exams',
+  orderBy: 'createdAt',
   columns: [
     { key: 'id', type: 'string' },
     { key: 'name', type: 'string' },
@@ -141,7 +139,7 @@ export const EXAMS: TableDef = {
     { key: 'forYou', type: 'string' },
     { key: 'forYouNote', type: 'string' },
     { key: 'confidence', type: 'string' },
-    { key: 'events', type: 'json' },
+    { key: 'events', type: 'json', empty: [] },
     { key: 'eligibility', type: 'string' },
     { key: 'age', type: 'string' },
     { key: 'url', type: 'string' },
@@ -156,7 +154,8 @@ export const EXAMS: TableDef = {
 };
 
 export const TASKS: TableDef = {
-  name: 'Tasks',
+  name: 'tasks',
+  orderBy: 'createdAt',
   columns: [
     { key: 'id', type: 'string' },
     { key: 'title', type: 'string' },
@@ -176,15 +175,16 @@ export const TASKS: TableDef = {
 };
 
 export const MAIL: TableDef = {
-  name: 'Mail',
+  name: 'mail_items',
+  orderBy: 'date',
   columns: [
     { key: 'id', type: 'string' },
-    { key: 'date', type: 'date' },
+    { key: 'date', type: 'date', column: 'received_at' },
     { key: 'category', type: 'string' },
     { key: 'status', type: 'string' },
     { key: 'subject', type: 'string' },
     { key: 'fromName', type: 'string' },
-    { key: 'from', type: 'string' },
+    { key: 'from', type: 'string', column: 'sender' },
     { key: 'company', type: 'string' },
     { key: 'role', type: 'string' },
     { key: 'due', type: 'string' },
@@ -200,118 +200,42 @@ export const MAIL: TableDef = {
   ],
 };
 
-const ALL_TABLES = [JOBS, JOB_TEXT, DOCS, ACTIVITY, PROGRAMS, EXAMS, TASKS, MAIL];
-
-interface RequestState {
-  ss: Spreadsheet | null;
-  tables: Map<string, Table<{ id: string }>>;
-  pendingActivity: ActivityEntry[];
-}
-
-let state: RequestState = { ss: null, tables: new Map(), pendingActivity: [] };
-
-/**
- * Apps Script starts every call with fresh globals, but the local dev harness
- * reuses one context, so each entry point resets explicitly.
- */
-export function resetRequestState(): void {
-  state = { ss: null, tables: new Map(), pendingActivity: [] };
-}
-
-function openStored(): Spreadsheet | null {
-  const id = props.get(PROP_SHEET_ID);
-  if (!id) return null;
-  try {
-    return SpreadsheetApp.openById(id);
-  } catch (e) {
-    log.warn('sheet.open_failed', { message: String(e) });
-    return null;
-  }
-}
-
-function setupSchema(ss: Spreadsheet): void {
-  for (const def of ALL_TABLES) ensureTable(ss, def);
-  const blank = ss.getSheetByName('Sheet1');
-  if (blank && ss.getSheets().length > 1 && blank.getLastRow() === 0) ss.deleteSheet(blank);
-  props.set(PROP_SCHEMA, SCHEMA_VERSION);
-}
-
-export function hasSpreadsheet(): boolean {
-  return Boolean(props.get(PROP_SHEET_ID));
-}
-
-export function spreadsheet(): Spreadsheet {
-  if (state.ss) return state.ss;
-  let ss = openStored();
-  if (!ss) {
-    ss = withUserLock(() => {
-      // Another request may have created it while we waited for the lock.
-      const again = openStored();
-      if (again) return again;
-      const created = SpreadsheetApp.create(SHEET_TITLE);
-      props.set(PROP_SHEET_ID, created.getId());
-      props.del(PROP_SCHEMA);
-      log.info('sheet.created');
-      return created;
-    });
-  }
-  if (props.get(PROP_SCHEMA) !== SCHEMA_VERSION) withUserLock(() => setupSchema(ss!));
-  state.ss = ss;
-  return ss;
-}
+export const ALL_TABLES = [JOBS, JOB_TEXT, DOCS, ACTIVITY, PROGRAMS, EXAMS, TASKS, MAIL];
 
 export function table<T extends { id: string }>(def: TableDef): Table<T> {
-  const cached = state.tables.get(def.name);
-  if (cached) return cached as unknown as Table<T>;
-  const ss = spreadsheet();
-  const sheet = ss.getSheetByName(def.name) ?? ensureTable(ss, def);
-  const t = new Table<T>(sheet, def);
-  state.tables.set(def.name, t as unknown as Table<{ id: string }>);
+  const c = ctx();
+  let t = c.tables.get(def.name) as Table<T> | undefined;
+  if (!t) {
+    t = new Table<T>(def);
+    c.tables.set(def.name, t);
+  }
   return t;
 }
 
 /**
- * Forget cached sheet reads. Call right after taking the lock when work done
- * outside the lock (network, AI) must be merged onto the latest data.
+ * Forget cached reads. Call right after taking the lock when work done outside
+ * the lock (network, AI) must be merged onto the latest data.
  */
 export function dropTableCache(): void {
-  state.tables = new Map();
+  for (const t of ctx().tables.values()) (t as Table<{ id: string }>).forget();
 }
 
 export function queueActivity(entry: ActivityEntry): void {
-  state.pendingActivity.push(entry);
+  ctx().activity.push(entry);
 }
 
 /** Write buffered activity in one call. Never throws: logging must not break a request. */
-export function flushActivity(): void {
-  const pending = state.pendingActivity;
+export async function flushActivity(): Promise<void> {
+  const c = ctx();
+  const pending = c.activity;
   if (!pending.length) return;
-  state.pendingActivity = [];
+  c.activity = [];
   try {
-    // Appends compute their start row from getLastRow(), so two executions
-    // writing at once could overwrite each other's rows: serialise them.
-    withUserLock(() => {
-      state.tables.delete(ACTIVITY.name);
-      const t = table<ActivityEntry>(ACTIVITY);
-      t.insert(pending);
-      t.trim(3000, 1000);
-    }, 5_000);
+    const t = table<ActivityEntry>(ACTIVITY);
+    await t.insert(pending);
+    // Trimming is a separate query; doing it now and then keeps the log bounded.
+    if (Math.random() < 0.1) await t.trim(3000);
   } catch (e) {
     log.warn('activity.flush_failed', { message: String(e) });
   }
-}
-
-export function sheetUrl(): string {
-  try {
-    return spreadsheet().getUrl();
-  } catch {
-    return '';
-  }
-}
-
-/** Forget the spreadsheet (used by "delete my data"); the file itself stays in the user's Drive. */
-export function forgetSpreadsheet(): void {
-  props.del(PROP_SHEET_ID);
-  props.del(PROP_SCHEMA);
-  resetRequestState();
 }

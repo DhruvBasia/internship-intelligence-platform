@@ -1,7 +1,7 @@
 /**
- * Shared domain types and the RPC contract between the Apps Script server
- * and the browser client. Everything here must stay JSON-serialisable:
- * google.script.run cannot carry Dates, functions or class instances.
+ * Shared domain types and the RPC contract between the server (a Supabase
+ * Edge Function) and the browser client. Everything here must stay
+ * JSON-serialisable: no Dates, functions or class instances.
  */
 
 export const STAGES = ['discovered', 'saved', 'applied', 'interviewing', 'offer', 'rejected', 'archived'] as const;
@@ -231,21 +231,51 @@ export interface Stats {
 
 export interface BootstrapData {
   version: string;
-  user: { email: string };
+  user: { email: string; isAdmin: boolean; since: string };
   profile: Profile;
   settings: SettingsView;
   usage: UsageView;
   jobs: JobSummary[];
   activity: ActivityEntry[];
-  sheetUrl: string;
   lastRefresh: RefreshReport | null;
-  migratedFromV1: number;
   features: Features;
   programs: Program[];
   exams: Exam[];
   tasks: Task[];
   mail: MailItem[];
   lastMailScan: MailReport | null;
+  /** Gmail connection, or null when not connected. */
+  gmail: GmailInfo | null;
+}
+
+export interface GmailInfo {
+  email: string;
+  status: 'active' | 'revoked' | 'error';
+  error: string;
+}
+
+export interface AdminUser {
+  userId: string;
+  email: string;
+  name: string;
+  school: string;
+  blocked: boolean;
+  createdAt: string;
+  lastSeenAt: string;
+  jobs: number;
+  applied: number;
+  gmail: boolean;
+}
+
+export interface AdminOverview {
+  users: number;
+  active1d: number;
+  active7d: number;
+  gmailConnected: number;
+  jobs: number;
+  applied: number;
+  signups: { day: string; count: number }[];
+  recent: AdminUser[];
 }
 
 export interface JobInput {
@@ -321,7 +351,13 @@ export interface Api {
   importFromSheet(url: string): ImportResult;
   resolveBoard(input: string): { board: Board; openRoles: number; internRoles: number };
   getActivity(limit: number): { activity: ActivityEntry[] };
-  deleteAllData(confirm: string): { sheetUrl: string };
+  exportData(): Record<string, unknown>;
+  deleteAccount(confirm: string): { deleted: boolean };
+  connectGmail(): { url: string };
+  disconnectGmail(): { gmail: null; settings: SettingsView };
+  calendarFeed(rotate?: boolean): { url: string };
+  adminOverview(): { overview: AdminOverview };
+  adminSetBlocked(userId: string, blocked: boolean): { userId: string; blocked: boolean };
 
   updateProgram(id: string, patch: ProgramPatch): { program: Program };
   createProgram(input: ProgramPatch & { name: string }): { program: Program };
@@ -359,6 +395,8 @@ export type ErrorCode =
   | 'AI_FAILED'
   | 'FETCH_FAILED'
   | 'BUSY'
+  | 'UNAUTHENTICATED'
+  | 'FORBIDDEN'
   | 'INTERNAL';
 
 // ---------------------------------------------------------------------------
@@ -521,7 +559,7 @@ export interface MailReport {
 }
 
 export interface Features {
-  /** Gmail scanning is compiled in only for deployments that request the read-only Gmail scope. */
+  /** Gmail tracking is available on this server (a Google OAuth client is configured). */
   mail: boolean;
 }
 

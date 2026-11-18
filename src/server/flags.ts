@@ -1,9 +1,13 @@
 /**
- * Build-time flags (see scripts/build.mjs). The public build has no personal
- * data and no Gmail access; a personal build reads private/config.json and
- * private/seed.json from the deployer's machine (git-ignored).
+ * Build-time and deployment flags.
+ *
+ * PERSONAL is the deployer's private seed (profile, roadmap tasks, programme
+ * ratings) read from the git-ignored private/ folder at build time. It is only
+ * ever applied to the account whose email matches INTERNIQ_OWNER_EMAIL.
  */
 import type { Area, Features, Fit, Profile, ProgramStage } from '../shared/types';
+import { ctx } from './platform/context';
+import { gmailConfigured } from './platform/env';
 
 export interface PersonalSeed {
   version: number;
@@ -13,8 +17,20 @@ export interface PersonalSeed {
   tasks?: { title: string; due: string; area: Area; notes?: string }[];
 }
 
-declare const __IIP_FEATURES__: Features | undefined;
 declare const __IIP_PERSONAL__: PersonalSeed | null | undefined;
 
-export const FEATURES: Features = typeof __IIP_FEATURES__ !== 'undefined' && __IIP_FEATURES__ ? __IIP_FEATURES__ : { mail: false };
-export const PERSONAL: PersonalSeed | null = typeof __IIP_PERSONAL__ !== 'undefined' && __IIP_PERSONAL__ ? __IIP_PERSONAL__ : null;
+let personal: PersonalSeed | null = typeof __IIP_PERSONAL__ !== 'undefined' && __IIP_PERSONAL__ ? __IIP_PERSONAL__ : null;
+
+export function getPersonalSeed(): PersonalSeed | null {
+  return personal;
+}
+
+/** Tests only: the seed is otherwise fixed at build time. */
+export function setPersonalSeedForTests(seed: PersonalSeed | null): void {
+  personal = seed;
+}
+
+/** What this deployment can do, for the current request. */
+export function features(): Features {
+  return { mail: gmailConfigured(ctx().env) };
+}

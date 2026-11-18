@@ -13,10 +13,10 @@ import { analyzeBatch } from './ai/analyze';
 import { getClient } from './ai/client';
 import type { AnalysisInput } from './ai/prompts';
 import { AppError, errorMessage } from './errors';
-import { withUserLock } from './gas';
 import { log } from './log';
+import { withUserLock } from './runtime';
 import { enrichDescriptions, fetchSources } from './sources';
-import { dropTableCache, type JobRow } from './store/db';
+import { dropTableCache, type JobRow, type JobTextRow } from './store/db';
 import { DedupeIndex, getTexts, insertRawJobs, jobsTable, logActivity, snippetOf, textTable, type RawJob } from './store/jobs';
 import { getProfile, getSettings, recordUsage, remainingAiRequests, setLastRefresh } from './store/userState';
 
@@ -39,38 +39,38 @@ function asText(raw: RawJob) {
   };
 }
 
-export function refresh(opts: { deadline: Deadline; aiBudgetMs: number }): RefreshReport {
+export async function refresh(opts: { deadline: Deadline; aiBudgetMs: number }): Promise<RefreshReport> {
   const settings = getSettings();
   const profile = getProfile();
   const startedAt = new Date().toISOString();
-  const results = fetchSources(settings);
+  const results = await fetchSources(settings);
 
   // Relevance + cap, newest-first within each source (sources are already sorted).
-  const existing = new DedupeIndex(jobsTable().all());
+  const existing = new DedupeIndex(await jobsTable().all());
   const candidates: RawJob[] = [];
   let duplicates = 0;
   for (const r of results) {
     const relevant = r.jobs.filter((j) => isRelevant(asText(j), profile, settings.filters));
     r.report.relevant = relevant.length;
     for (const j of relevant) {
-      j.origin = r.report.id;
-      const url = canonicalUrl(j.url);
-      const key = roleKey(j.company, j.role);
+      const job = { ...j, origin: r.report.id };
+      const url = canonicalUrl(job.url);
+      const key = roleKey(job.company, job.role);
       if (existing.has(url, key)) {
         duplicates++;
         continue;
       }
       existing.add(url, key);
-      candidates.push(j);
+      candidates.push(job);
     }
   }
   // Interleave sources so one huge source cannot crowd out followed companies.
   const capped = interleaveBySource(candidates).slice(0, settings.filters.maxNewPerRefresh);
 
-  const inserted = withUserLock(() => {
+  const inserted = await withUserLock(async () => {
     dropTableCache();
-    const rows = insertRawJobs(capped, profile);
-    queueForAi(rows, settings);
+    const rows = await insertRawJobs(capped, profile);
+    await queueForAi(rows, settings);
     return rows;
   });
   const addedByOrigin = new Map<string, number>();
@@ -85,11 +85,11 @@ export function refresh(opts: { deadline: Deadline; aiBudgetMs: number }): Refre
   let aiError = '';
   const aiDeadline: Deadline = { at: Math.min(opts.deadline.at, Date.now() + opts.aiBudgetMs) };
   if (opts.aiBudgetMs > 0 && getClient(settings)) {
-    const out = processAiQueue({ deadline: aiDeadline });
+    const out = await processAiQueue({ deadline: aiDeadline });
     aiAnalyzed = out.analyzed;
     aiError = out.error;
   }
-  const aiQueued = jobsTable().all().filter((j) => j.aiStatus === 'queued').length;
+  const aiQueued = (await jobsTable().all()).filter((j) => j.aiStatus === 'queued').length;
 
   const report: RefreshReport = {
     startedAt,
@@ -128,13 +128,12 @@ function interleaveBySource(jobs: RawJob[]): RawJob[] {
 }
 
 /** Mark promising, never-analysed jobs for background AI analysis. Caller holds the lock. */
-function queueForAi(rows: JobRow[], settings: Settings): void {
+async function queueForAi(rows: JobRow[], settings: Settings): Promise<void> {
   // Only queue when a working client exists; otherwise jobs would sit "queued" forever.
   if (!settings.ai.autoAnalyze || !getClient(settings)) return;
   const toQueue = rows.filter((r) => r.aiStatus === 'none' && r.score >= settings.ai.autoMinScore && r.stage !== 'archived' && r.stage !== 'rejected');
   if (!toQueue.length) return;
-  const t = jobsTable();
-  t.update(toQueue.map((r) => ({ ...r, aiStatus: 'queued' as const })));
+  await jobsTable().update(toQueue.map((r) => ({ ...r, aiStatus: 'queued' as const })));
 }
 
 export interface AiRunResult {
@@ -147,7 +146,7 @@ export interface AiRunResult {
  * Analyse queued jobs (or the given ids) with AI, batch by batch, until the
  * deadline, the daily budget or the provider's quota stops us.
  */
-export function processAiQueue(opts: { deadline: Deadline; ids?: string[] }): AiRunResult {
+export async function processAiQueue(opts: { deadline: Deadline; ids?: string[] }): Promise<AiRunResult> {
   const settings = getSettings();
   const client = getClient(settings);
   if (!client) {
@@ -163,7 +162,7 @@ export function processAiQueue(opts: { deadline: Deadline; ids?: string[] }): Ai
     return { analyzed: 0, error: msg, ids: [] };
   }
 
-  const all = jobsTable().all();
+  const all = await jobsTable().all();
   let targets: JobRow[];
   if (opts.ids) {
     const want = new Set(opts.ids);
@@ -176,8 +175,8 @@ export function processAiQueue(opts: { deadline: Deadline; ids?: string[] }): Ai
   targets = targets.slice(0, allowedRequests * batchSize);
   if (!targets.length) return { analyzed: 0, error: '', ids: [] };
 
-  const texts = getTexts(targets.map((t) => t.id));
-  enrichThin(targets, texts, profile);
+  const texts = await getTexts(targets.map((t) => t.id));
+  await enrichThin(targets, texts, profile);
 
   const results = new Map<string, MatchResult>();
   const attempted = new Set<string>();
@@ -202,7 +201,7 @@ export function processAiQueue(opts: { deadline: Deadline; ids?: string[] }): Ai
     batch.forEach((b) => attempted.add(b.id));
     requests++;
     try {
-      const got = analyzeBatch(client, profile, hash, inputs);
+      const got = await analyzeBatch(client, profile, hash, inputs);
       got.forEach((v, k) => results.set(k, v));
     } catch (e) {
       error = errorMessage(e);
@@ -211,12 +210,13 @@ export function processAiQueue(opts: { deadline: Deadline; ids?: string[] }): Ai
   }
 
   const now = new Date().toISOString();
-  withUserLock(() => {
+  await withUserLock(async () => {
     dropTableCache();
     const t = jobsTable();
+    const fresh = await t.getMany(Array.from(attempted));
     const updates: JobRow[] = [];
     for (const id of attempted) {
-      const row = t.get(id);
+      const row = fresh.get(id);
       if (!row) continue;
       const m = results.get(id);
       if (m) {
@@ -232,7 +232,7 @@ export function processAiQueue(opts: { deadline: Deadline; ids?: string[] }): Ai
         });
       }
     }
-    t.update(updates);
+    await t.update(updates);
   });
   recordUsage(requests, results.size, settings);
   if (results.size) logActivity('', 'ai', `AI analysed ${results.size} job${results.size === 1 ? '' : 's'} with ${client.model}`);
@@ -240,19 +240,20 @@ export function processAiQueue(opts: { deadline: Deadline; ids?: string[] }): Ai
 }
 
 /** SimplifyJobs and similar sources list titles only; fetch fuller text before spending AI on them. */
-function enrichThin(targets: JobRow[], texts: Map<string, { id: string; description: string; requirements: string; local: MatchResult | null }>, profile: Profile): void {
+async function enrichThin(targets: JobRow[], texts: Map<string, JobTextRow>, profile: Profile): Promise<void> {
   const thin = targets.filter((r) => (texts.get(r.id)?.description ?? '').length < 300 && r.url).slice(0, 15);
   if (!thin.length) return;
-  const found = enrichDescriptions(thin.map((r) => ({ id: r.id, url: r.url })));
+  const found = await enrichDescriptions(thin.map((r) => ({ id: r.id, url: r.url })));
   if (!found.size) return;
-  withUserLock(() => {
+  await withUserLock(async () => {
     dropTableCache();
     const jt = jobsTable();
     const tt = textTable();
+    const rows = await jt.getMany(Array.from(found.keys()));
     const rowUpdates: JobRow[] = [];
-    const textUpdates: { id: string; description: string; requirements: string; local: MatchResult | null }[] = [];
+    const textUpdates: JobTextRow[] = [];
     found.forEach((f, id) => {
-      const row = jt.get(id);
+      const row = rows.get(id);
       if (!row) return;
       const location = row.location || f.location;
       const local = scoreLocally(
@@ -261,11 +262,11 @@ function enrichThin(targets: JobRow[], texts: Map<string, { id: string; descript
       );
       const keepAi = row.match?.method === 'ai';
       rowUpdates.push({ ...row, location, snippet: snippetOf(f.description, f.requirements), match: keepAi ? row.match : local, score: keepAi ? row.score : local.score });
-      const text = { id, description: f.description, requirements: f.requirements, local };
+      const text: JobTextRow = { id, description: f.description, requirements: f.requirements, local, enrichedAt: new Date().toISOString() };
       textUpdates.push(text);
       texts.set(id, text);
     });
-    jt.update(rowUpdates);
-    tt.upsert(textUpdates);
+    await jt.update(rowUpdates);
+    await tt.upsert(textUpdates);
   });
 }
