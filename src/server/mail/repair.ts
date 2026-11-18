@@ -20,7 +20,7 @@ import { mailTable, tasksTable } from '../store/records';
 import { getSettings } from '../store/userState';
 import { classifyMail, hasJobContext, isEventMail, mailCompany } from './classify';
 
-export const REPAIR_VERSION = '1';
+export const REPAIR_VERSION = '2';
 const PROP = 'mail.repair';
 
 const STAGE_RANK: Record<Stage, number> = { discovered: 0, saved: 1, applied: 2, interviewing: 3, offer: 4, rejected: 5, archived: -1 };

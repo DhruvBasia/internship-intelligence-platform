@@ -113,10 +113,10 @@ function cleanCompany(s: string): string {
   return c;
 }
 
-/** A display name that is really an address ("donotreply.indiacampus", "no-reply@…"). */
+/** A display name that is really an address ("donotreply.indiacampus", "no-reply@…"); "Alphashots.ai" is a real name. */
 function addressLike(name: string): boolean {
   const n = name.trim();
-  return !n || n.includes('@') || /^[\w-]+(\.[\w-]+)+$/.test(n) || /^(do-?not-?reply|no-?reply)\b/i.test(n);
+  return !n || n.includes('@') || /^(do-?not-?reply|no-?reply|noreply|mailer|notifications?)\b/i.test(n);
 }
 
 const NAME = `[A-Z][\\w&.'-]*(?:\\s+(?:[A-Z][\\w&.'-]*|&|of|and))*?`;

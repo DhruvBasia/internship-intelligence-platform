@@ -77,6 +77,8 @@ describe('email triage', () => {
     expect(forwarded.cleanSubject).toBe('Northwind Recruitment Process: Download your Admit Card NOW!');
 
     expect(c('We received your Stripe Application', 'no-reply@us.greenhouse-mail.io').company).toBe('Stripe');
+    // A sender name that happens to contain a dot is still the company.
+    expect(c('Cohort 3 Application Action - AI Engineering Internship', 'Alphashots.ai <divya@alphashots.ai>', { body: 'Your internship application moves to the next round.' }).company).toBe('Alphashots');
     expect(c('Registration Confirmed - Cloud Analogy Drive on Monday, 16 November 2026', 'KodNest <hi@kodnest.com>').company).toBe('Cloud Analogy');
     expect(c('Application Status Update – Cloud Analogy', 'KodNest <hi@kodnest.com>', { body: 'Unfortunately we will not be moving forward with your application.' })).toMatchObject({ company: 'Cloud Analogy', suggestedStage: 'rejected' });
   });
