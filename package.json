@@ -17,7 +17,8 @@
     "test": "vitest run",
     "check": "npm run typecheck && npm run test && npm run build",
     "setup": "node scripts/setup.mjs",
-    "deploy:server": "node scripts/deploy.mjs"
+    "deploy:server": "node scripts/deploy.mjs",
+    "secret:google": "node scripts/set-google-secret.mjs"
   },
   "dependencies": {
     "@preact/signals": "2.11.4",
