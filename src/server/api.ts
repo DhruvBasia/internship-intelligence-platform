@@ -21,6 +21,7 @@ import {
   type Exam,
   type ExamEvent,
   type ExamPatch,
+  type FeedbackItem,
   type GmailInfo,
   type ImportResult,
   type JobInput,
@@ -614,7 +615,7 @@ export async function deleteAccount(confirmArg: unknown) {
   if (!res.ok && res.status !== 404) {
     // Could not remove the login: at least remove every piece of data.
     for (const def of ALL_TABLES) await c.service.delete(def.name, [{ col: 'user_id', op: 'eq', value: c.userId }]);
-    for (const t of ['user_kv', 'user_secrets']) await c.service.delete(t, [{ col: 'user_id', op: 'eq', value: c.userId }]);
+    for (const t of ['user_kv', 'user_secrets', 'feedback']) await c.service.delete(t, [{ col: 'user_id', op: 'eq', value: c.userId }]);
   }
   // Nothing left to write back.
   c.profileDirty = false;
@@ -1012,6 +1013,62 @@ export async function calendarFeed(rotateArg?: unknown) {
     c.profile.ics_token = token;
   }
   return { url: `${c.env.functionUrl}/ics/${token}.ics` };
+}
+
+// ---------------------------------------------------------------------------
+// Feedback from testers (stored server-side; only the owner dashboard reads it)
+
+const FEEDBACK_KINDS = ['bug', 'idea', 'other'] as const;
+
+export async function sendFeedback(inputArg: unknown): Promise<{ sent: true }> {
+  const o = inputArg && typeof inputArg === 'object' ? (inputArg as Record<string, unknown>) : {};
+  const message = text(o.message, 'Message', 4000, true);
+  if (message.length < 3) throw badInput('Write a few words about what happened or what you would like.');
+  const kind = (FEEDBACK_KINDS as readonly string[]).includes(String(o.kind)) ? String(o.kind) : 'other';
+  const c = ctx();
+  await c.service.insert('feedback', [
+    {
+      user_id: c.userId,
+      email: c.email,
+      kind,
+      message,
+      page: text(o.page, 'Page', 40).replace(/[^a-z0-9 _-]/gi, ''),
+      device: text(o.device, 'Device', 300),
+      version: APP_VERSION,
+    },
+  ]);
+  log.info('feedback.sent', { kind });
+  return { sent: true };
+}
+
+function feedbackRow(r: Record<string, unknown>): FeedbackItem {
+  const at = r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at ?? '');
+  return {
+    id: String(r.id),
+    email: String(r.email ?? ''),
+    createdAt: at,
+    kind: (FEEDBACK_KINDS as readonly string[]).includes(String(r.kind)) ? (String(r.kind) as FeedbackItem['kind']) : 'other',
+    message: String(r.message ?? ''),
+    page: String(r.page ?? ''),
+    device: String(r.device ?? ''),
+    version: String(r.version ?? ''),
+    status: r.status === 'done' ? 'done' : 'new',
+  };
+}
+
+export async function adminFeedback(): Promise<{ feedback: FeedbackItem[] }> {
+  requireAdmin();
+  const rows = await ctx().service.select('feedback', { filters: [], order: [{ col: 'created_at', desc: true }], limit: 200 });
+  return { feedback: rows.map(feedbackRow) };
+}
+
+export async function adminSetFeedbackStatus(idArg: unknown, statusArg: unknown) {
+  requireAdmin();
+  const id = text(idArg, 'Feedback', 64, true);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw badInput('Invalid feedback id.');
+  const status: FeedbackItem['status'] = statusArg === 'done' ? 'done' : 'new';
+  await ctx().service.update('feedback', { status }, [{ col: 'id', op: 'eq', value: id }]);
+  return { id, status };
 }
 
 // ---------------------------------------------------------------------------

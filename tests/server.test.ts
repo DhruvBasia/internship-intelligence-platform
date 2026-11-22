@@ -453,6 +453,26 @@ describe('owner dashboard', () => {
     await owner.ok('adminSetBlocked', student.userId, false);
     expect((await student.call('bootstrap')).ok).toBe(true);
   });
+
+  it('collects tester feedback that only the owner can read', async () => {
+    const student = await boot();
+    await student.ok('bootstrap');
+    expect((await student.call('sendFeedback', { kind: 'bug', message: '' })).error?.code).toBe('BAD_INPUT');
+    expect((await student.call('sendFeedback', { kind: 'bug', message: 'x'.repeat(4001) })).error?.code).toBe('BAD_INPUT');
+    await student.ok('sendFeedback', { kind: 'bug', message: 'Pipeline cards overlap on my phone', page: 'pipeline<script>', device: 'Test browser · 375×812' });
+    await student.ok('sendFeedback', { kind: 'nonsense', message: 'Love the calendar' });
+    expect((await student.call('adminFeedback')).error?.code).toBe('FORBIDDEN');
+    const owner = await boot({ email: 'owner@student.example' });
+    const { feedback } = await owner.ok('adminFeedback');
+    const mine = feedback.filter((f: any) => f.email === student.email);
+    expect(mine).toHaveLength(2);
+    const bug = mine.find((f: any) => f.kind === 'bug');
+    expect(bug).toMatchObject({ message: 'Pipeline cards overlap on my phone', page: 'pipelinescript', status: 'new' });
+    expect(mine.find((f: any) => f.message === 'Love the calendar').kind).toBe('other');
+    await owner.ok('adminSetFeedbackStatus', bug.id, 'done');
+    const after = (await owner.ok('adminFeedback')).feedback.find((f: any) => f.id === bug.id);
+    expect(after.status).toBe('done');
+  });
 });
 
 describe('Gmail', () => {

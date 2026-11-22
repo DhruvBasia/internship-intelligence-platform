@@ -49,6 +49,8 @@ describe('schema and row-level security', () => {
     await expect(user.select('user_secrets', { filters: [] })).rejects.toThrow(/permission/);
     await expect(user.select('gmail_connections', { filters: [] })).rejects.toThrow(/permission/);
     await expect(user.insert('source_cache', [{ key: 'simplify', body: [] }])).rejects.toThrow(/permission/);
+    await expect(user.select('feedback', { filters: [] })).rejects.toThrow(/permission/);
+    await expect(user.insert('feedback', [{ user_id: A, message: 'hi' }])).rejects.toThrow(/permission/);
     const ctx = await user.rpc<any>('interniq_context', {});
     expect(ctx.secrets).toEqual({ 'ai.gemini': 'v1.x.y' });
     expect(ctx.gmail).toMatchObject({ email: 'a@example.com', status: 'active' });

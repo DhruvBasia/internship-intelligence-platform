@@ -4,7 +4,7 @@
  */
 import { useMemo, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
-import { ArrowRight, Bookmark, BookmarkCheck, Check, Clock, Compass, FileText, GraduationCap, Landmark, RefreshCw, TriangleAlert, Video } from 'lucide-preact';
+import { ArrowRight, Bookmark, BookmarkCheck, Check, Clock, Compass, FileText, GraduationCap, Landmark, MessageSquare, RefreshCw, TriangleAlert, Video } from 'lucide-preact';
 import type { CalEvent } from '../../shared/calendar';
 import { DOC_KEYS, DOC_LABELS, STAGE_LABELS, type JobSummary, type MailItem, type Stage, type Task } from '../../shared/types';
 import { daysUntil, dueLabel, greeting, plural, relTime, todayDay, verdictOf } from '../lib/format';
@@ -35,6 +35,7 @@ import {
 } from '../state';
 import { Button, Callout, Empty, ExtLink, ScoreRing } from '../ui';
 import { AreaDot, openEvent, useEvents } from './Calendar';
+import { feedbackOpen } from './Feedback';
 
 const DAY = 86_400_000;
 
@@ -787,6 +788,9 @@ export function Home() {
           <span class={`sync-dot${aiReady.value ? ' ai' : ' off'}`} aria-hidden="true" />
           {aiReady.value && u ? `AI scoring on, ${u.aiRequests} of ${u.dailyLimit} used today${u.cooldownUntil ? ', cooling down' : ''}` : 'Free scoring only. Add a free Gemini key in Settings for AI analysis.'}
         </span>
+        <button type="button" class="hm-link hm-feedback" onClick={() => (feedbackOpen.value = true)}>
+          <MessageSquare size={13} aria-hidden="true" /> Send feedback
+        </button>
       </footer>
     </div>
   );

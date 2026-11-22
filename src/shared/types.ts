@@ -322,9 +322,28 @@ export interface ImportResult {
   jobs: JobSummary[];
 }
 
+export type FeedbackKind = 'bug' | 'idea' | 'other';
+
+export interface FeedbackInput {
+  kind: FeedbackKind;
+  message: string;
+  /** The screen the student was on, e.g. "pipeline". */
+  page: string;
+  /** Browser and screen size, to reproduce layout bugs. */
+  device: string;
+}
+
+export interface FeedbackItem extends FeedbackInput {
+  id: string;
+  email: string;
+  createdAt: string;
+  version: string;
+  status: 'new' | 'done';
+}
+
 /**
- * The RPC surface. Each method maps 1:1 to a top-level Apps Script function
- * and returns an {@link RpcResult} envelope.
+ * The RPC surface. Each method maps 1:1 to a server handler in rpc.ts and
+ * returns an {@link RpcResult} envelope.
  */
 export interface Api {
   bootstrap(): BootstrapData;
@@ -358,9 +377,12 @@ export interface Api {
   connectGmail(): { url: string };
   disconnectGmail(): { gmail: null; settings: SettingsView };
   calendarFeed(rotate?: boolean): { url: string };
+  sendFeedback(input: FeedbackInput): { sent: true };
   adminOverview(): { overview: AdminOverview };
   adminSetBlocked(userId: string, blocked: boolean): { userId: string; blocked: boolean };
   adminInstallCron(): { automation: AdminOverview['automation'] };
+  adminFeedback(): { feedback: FeedbackItem[] };
+  adminSetFeedbackStatus(id: string, status: FeedbackItem['status']): { id: string; status: FeedbackItem['status'] };
 
   updateProgram(id: string, patch: ProgramPatch): { program: Program };
   createProgram(input: ProgramPatch & { name: string }): { program: Program };

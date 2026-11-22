@@ -27,8 +27,9 @@ if (!ref) {
 }
 
 run('npm', ['run', 'check']);
-if (process.argv.includes('--db')) run('npx', ['supabase', 'db', 'push']);
-run('npx', ['supabase', 'functions', 'deploy', 'api', '--project-ref', ref, '--no-verify-jwt', '--use-api']);
+// --remote: newer Supabase CLIs target a local Docker database unless told otherwise.
+if (process.argv.includes('--db')) run('npx', ['supabase', 'db', 'push', '--remote']);
+run('npx', ['supabase', 'functions', 'deploy', 'api', `--remote=${ref}`, '--no-verify-jwt', '--use-api']);
 
 const res = await fetch(`https://${ref}.supabase.co/functions/v1/api/health`).catch(() => null);
 const body = res ? await res.json().catch(() => ({})) : {};

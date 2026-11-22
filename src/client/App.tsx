@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { computed } from '@preact/signals';
-import { CalendarDays, ChartColumn, ChevronDown, Compass, FileSpreadsheet, Gauge, GraduationCap, House, Landmark, Link, LogOut, Mail, Monitor, Moon, PenLine, Plus, RefreshCw, Search, Settings as Cog, Sparkles, SquareKanban, Sun } from 'lucide-preact';
+import { CalendarDays, ChartColumn, ChevronDown, Compass, FileSpreadsheet, Gauge, GraduationCap, House, Landmark, Link, LogOut, Mail, MessageSquare, Monitor, Moon, PenLine, Plus, RefreshCw, Search, Settings as Cog, Sparkles, SquareKanban, Sun } from 'lucide-preact';
 import { addOpen, aiReady, applyTheme, bootError, bootPhase, counts, email, filters, isAdmin, lastRefresh, loaded, mail, navigate, openJobId, refreshNow, refreshing, setFilters, settings, tasks, theme, usage, view, type View } from './state';
 import { session, signOut } from './auth';
 import { Admin } from './views/Admin';
@@ -25,6 +25,7 @@ import { SettingsView } from './views/Settings';
 import { Onboarding } from './views/Onboarding';
 import { JobDrawer } from './views/JobDrawer';
 import { AddJobModal } from './views/AddJob';
+import { FeedbackModal, feedbackOpen } from './views/Feedback';
 
 const NAV: { id: View; label: string; Icon: typeof House; group: string }[] = [
   { id: 'home', label: 'Home', Icon: House, group: 'Overview' },
@@ -130,6 +131,9 @@ function Sidebar() {
         </>
       ))}
       <div class="sidebar-foot">
+        <button type="button" class="nav-item" onClick={() => (feedbackOpen.value = true)}>
+          <MessageSquare size={16} /> Send feedback
+        </button>
         {s && aiReady.value && u ? (
           <div class="ai-card">
             <div class="row small">
@@ -324,6 +328,7 @@ export function App() {
       <MobileNav />
       {openJobId.value ? <JobDrawer id={openJobId.value} /> : null}
       {addOpen.value ? <AddJobModal mode={addOpen.value} /> : null}
+      {feedbackOpen.value ? <FeedbackModal /> : null}
       <Toasts />
     </div>
   );

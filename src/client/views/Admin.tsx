@@ -3,8 +3,8 @@
  * The server only answers for emails listed in INTERNIQ_ADMIN_EMAILS.
  */
 import { useEffect, useMemo, useState } from 'preact/hooks';
-import { Clock, RefreshCw, ShieldBan, ShieldCheck } from 'lucide-preact';
-import type { AdminOverview, AdminUser } from '../../shared/types';
+import { Check, Clock, MessageSquare, RefreshCw, ShieldBan, ShieldCheck } from 'lucide-preact';
+import type { AdminOverview, AdminUser, FeedbackItem } from '../../shared/types';
 import { call, errorText } from '../api';
 import { relTime } from '../lib/format';
 import { email, toast, toastError } from '../state';
@@ -41,6 +41,95 @@ function Signups({ days }: { days: AdminOverview['signups'] }) {
           <span title={`${c.day}: ${c.n}`} style={{ height: c.n ? `${Math.max(6, (c.n / max) * 100)}%` : '2px', opacity: c.n ? 1 : 0.25 }} />
         ))}
       </div>
+    </section>
+  );
+}
+
+const KIND_LABEL: Record<FeedbackItem['kind'], string> = { bug: 'Bug', idea: 'Idea', other: 'Other' };
+
+/** What testers sent from "Send feedback", newest first. */
+function FeedbackInbox() {
+  const [items, setItems] = useState<FeedbackItem[] | null>(null);
+  const [error, setError] = useState('');
+  const [showDone, setShowDone] = useState(false);
+  const load = async () => {
+    try {
+      setItems((await call('adminFeedback')).feedback);
+      setError('');
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  useEffect(() => void load(), []);
+  const setStatus = async (f: FeedbackItem, status: FeedbackItem['status']) => {
+    setItems((list) => list?.map((x) => (x.id === f.id ? { ...x, status } : x)) ?? null);
+    try {
+      await call('adminSetFeedbackStatus', f.id, status);
+    } catch (e) {
+      setItems((list) => list?.map((x) => (x.id === f.id ? f : x)) ?? null);
+      toastError(e);
+    }
+  };
+  const open = items?.filter((f) => f.status === 'new') ?? [];
+  const shown = (items ?? []).filter((f) => showDone || f.status === 'new');
+  return (
+    <section class="card" style={{ overflow: 'hidden' }} aria-labelledby="fb-title">
+      <div class="row card-pad" style={{ gap: 10 }}>
+        <MessageSquare size={18} aria-hidden="true" />
+        <h3 id="fb-title" style={{ fontSize: 15 }}>
+          Feedback from testers
+        </h3>
+        <span class="small muted">{items ? `${open.length} open${items.length > open.length ? `, ${items.length - open.length} done` : ''}` : ''}</span>
+        <span class="spacer" />
+        {items && items.length > open.length ? (
+          <Button size="sm" variant="ghost" onClick={() => setShowDone(!showDone)}>
+            {showDone ? 'Hide done' : 'Show done'}
+          </Button>
+        ) : null}
+        <Button size="sm" variant="ghost" onClick={() => void load()}>
+          <RefreshCw size={14} /> Reload
+        </Button>
+      </div>
+      {error ? (
+        <div class="card-pad" style={{ paddingTop: 0 }}>
+          <Callout kind="error">{error}</Callout>
+        </div>
+      ) : !items ? (
+        <div class="card-pad" style={{ paddingTop: 0 }}>
+          <Skeleton h={60} />
+        </div>
+      ) : shown.length ? (
+        <ul class="fb-list">
+          {shown.map((f) => (
+            <li class={f.status === 'done' ? 'done' : ''}>
+              <div class="fb-meta">
+                <span class={`fb-kind ${f.kind}`}>{KIND_LABEL[f.kind]}</span>
+                <span>{f.email}</span>
+                <span class="muted">{relTime(f.createdAt)}</span>
+                {f.page ? <span class="muted">on {f.page}</span> : null}
+                <span class="spacer" />
+                <Button size="sm" variant="ghost" onClick={() => void setStatus(f, f.status === 'done' ? 'new' : 'done')}>
+                  {f.status === 'done' ? (
+                    'Reopen'
+                  ) : (
+                    <>
+                      <Check size={14} /> Done
+                    </>
+                  )}
+                </Button>
+              </div>
+              <p class="fb-message">{f.message}</p>
+              <p class="tiny muted fb-device" title={f.device}>
+                {f.device} · v{f.version}
+              </p>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p class="small muted card-pad" style={{ paddingTop: 0 }}>
+          {items.length ? 'All feedback is marked done.' : 'Nothing yet. Testers can send feedback from the sidebar, Home or Settings.'}
+        </p>
+      )}
     </section>
   );
 }
@@ -139,6 +228,7 @@ export function Admin() {
           </div>
         ) : null}
       </section>
+      <FeedbackInbox />
       <Signups days={data.signups} />
       <section class="card" style={{ overflow: 'hidden' }}>
         <div class="row card-pad" style={{ gap: 10 }}>

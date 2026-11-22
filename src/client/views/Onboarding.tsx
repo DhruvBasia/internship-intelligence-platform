@@ -66,7 +66,7 @@ export function Onboarding() {
       <div class="onboard-card">
         <div class="row">
           <div class="logo-mark" aria-hidden="true">
-            IQ
+            iq
           </div>
           <div>
             <div class="brand-name">InternIQ</div>
@@ -150,7 +150,7 @@ export function Onboarding() {
                 <span class="tiny muted">Add any other company later in Settings → Sources.</span>
               </div>
               <Toggle checked={pack} onChange={setPack} label="Add 32 research programmes" hint="ETH SSRF, Mitacs, MBZUAI, IISc, IIT fellowships, MSR India and more, with official links." />
-              <Toggle checked={daily} onChange={setDaily} label="Refresh automatically every morning" hint="Runs in your Google account; you can change the time later." />
+              <Toggle checked={daily} onChange={setDaily} label="Refresh automatically every morning" hint="InternIQ fetches new postings for you each morning, even with the tab closed. You can change the time later." />
             </>
           ) : null}
 

@@ -62,7 +62,10 @@ export const RPC: Record<ApiMethod, Entry> = {
   connectGmail: { fn: api.connectGmail, perMinute: 6 },
   disconnectGmail: { fn: api.disconnectGmail, perMinute: 6 },
   calendarFeed: { fn: api.calendarFeed, perMinute: 6 },
+  sendFeedback: { fn: api.sendFeedback, perMinute: 5 },
   adminOverview: { fn: api.adminOverview, perMinute: 20 },
+  adminFeedback: { fn: api.adminFeedback, perMinute: 20 },
+  adminSetFeedbackStatus: { fn: api.adminSetFeedbackStatus, perMinute: 60 },
   adminSetBlocked: { fn: api.adminSetBlocked, perMinute: 30 },
   adminInstallCron: { fn: api.adminInstallCron, perMinute: 4 },
 };

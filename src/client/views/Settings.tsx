@@ -10,6 +10,7 @@ import { plural } from '../lib/format';
 import { signOut } from '../auth';
 import { addOpen, aiReady, connectGmail, disconnectGmail, email, features, gmail, jobs, profile, readHash, remember, saveProfile, saveSettings, setJobs, settings, toast, toastError, usage, version } from '../state';
 import { Button, Callout, ChipsInput, ExtLink, Field, Meter, Toggle } from '../ui';
+import { feedbackOpen } from './Feedback';
 
 type Tab = 'profile' | 'ai' | 'sources' | 'automation' | 'mail' | 'data';
 
@@ -162,7 +163,7 @@ export function AiSetup({ compact }: { compact?: boolean }) {
   };
 
   const options: { id: ProviderChoice; title: string; body: string }[] = [
-    { id: 'none', title: 'Free built-in matcher only', body: 'No key, no limits, nothing leaves Google. Scores skills, role fit, eligibility and location with rules.' },
+    { id: 'none', title: 'Free built-in matcher only', body: 'No key, no limits, and your profile is never sent to an AI service. Scores skills, role fit, eligibility and location with rules.' },
     { id: 'gemini', title: 'Google Gemini (free key, recommended)', body: 'Deeper analysis and written cover letters. Get a free key from Google AI Studio in a minute.' },
     { id: 'groq', title: 'Groq (free key)', body: 'Very fast open models (Llama, GPT-OSS) on a free tier.' },
     { id: 'openrouter', title: 'OpenRouter (free models)', body: 'One key, many models; only free ones are listed.' },
@@ -771,6 +772,12 @@ export function SettingsView() {
           Changes on this tab save as you make them.
         </p>
       ) : null}
+      <div class="row wrap small" style={{ marginTop: 20, gap: 10 }}>
+        <span class="muted">Found a bug or have an idea?</span>
+        <Button size="sm" onClick={() => (feedbackOpen.value = true)}>
+          Send feedback
+        </Button>
+      </div>
     </div>
   );
 }
