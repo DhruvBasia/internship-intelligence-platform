@@ -159,6 +159,3 @@ Copy the contents of each file from this repository into your Apps Script projec
 
 ---
 
-## License
-
-This project is licensed under the [MIT License](LICENSE).
